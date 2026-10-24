@@ -18,11 +18,16 @@ class Settings:
     database_path: Path
     camera_source: str
     camera_index: int
+    camera_name: str | None
     camera_fixture: Path
     camera_width: int
     camera_height: int
     detection_ttl_ms: int
     marker_dictionary: str
+    object_detection_provider: str
+    object_model: Path
+    object_confidence: float
+    object_interval_ms: int
     transcription_provider: str
     openai_api_key: str | None
     openai_transcription_model: str
@@ -34,6 +39,7 @@ class Settings:
             database_path=_path_env("APP_DATABASE_PATH", "./data/locus.db"),
             camera_source=os.getenv("APP_CAMERA_SOURCE", "camera").lower(),
             camera_index=int(os.getenv("APP_CAMERA_INDEX", "0")),
+            camera_name=os.getenv("APP_CAMERA_NAME") or None,
             camera_fixture=_path_env(
                 "APP_CAMERA_FIXTURE", "./markers/demo-fixture.png"
             ),
@@ -43,6 +49,12 @@ class Settings:
             marker_dictionary=os.getenv(
                 "APP_MARKER_DICTIONARY", "DICT_4X4_50"
             ),
+            object_detection_provider=os.getenv(
+                "APP_OBJECT_DETECTION", "yolo"
+            ).lower(),
+            object_model=_path_env("APP_OBJECT_MODEL", "./models/yolo11n.pt"),
+            object_confidence=float(os.getenv("APP_OBJECT_CONFIDENCE", "0.45")),
+            object_interval_ms=int(os.getenv("APP_OBJECT_INTERVAL_MS", "150")),
             transcription_provider=os.getenv(
                 "APP_TRANSCRIPTION_PROVIDER", "disabled"
             ).lower(),

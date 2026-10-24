@@ -9,7 +9,9 @@ dependencies = [
   "numpy==2.1.3",
   "opencv-contrib-python-headless==4.10.0.84",
   "pydantic==2.10.4",
+  "pyobjc-framework-AVFoundation==12.2.2; sys_platform == 'darwin'",
   "python-multipart==0.0.20",
+  "ultralytics==8.4.123",
   "uvicorn[standard]==0.34.0",
 ]
 
@@ -26,3 +28,6 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.uv]
 package = false
+# ultralytics depends on opencv-python, which would overwrite the contrib
+# build's cv2 package; the headless contrib wheel already provides everything.
+override-dependencies = ["opencv-python; sys_platform == 'never'"]

@@ -329,10 +329,17 @@ with `npm run dev`; its `/api` proxy targets FastAPI on port 8000.
 # Core
 APP_DATABASE_PATH=./data/locus.db
 APP_CAMERA_INDEX=0
+APP_CAMERA_NAME=            # macOS: e.g. "Brio 100"; overrides the index
 APP_CAMERA_SOURCE=camera
 APP_CAMERA_FIXTURE=
 APP_MARKER_DICTIONARY=DICT_4X4_50
 APP_DETECTION_TTL_MS=750
+
+# Object detection (YOLO, 80 COCO classes; weights download on first start)
+APP_OBJECT_DETECTION=yolo   # yolo | disabled
+APP_OBJECT_MODEL=./models/yolo11n.pt
+APP_OBJECT_CONFIDENCE=0.45
+APP_OBJECT_INTERVAL_MS=150
 
 # Transcription
 APP_TRANSCRIPTION_PROVIDER=disabled

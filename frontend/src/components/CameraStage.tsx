@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { mapFramePoint } from "../geometry";
+import { mapFrameBox, mapFramePoint } from "../geometry";
 import type { Detection, RecognitionResponse } from "../types";
 
 interface Props {
@@ -45,6 +45,10 @@ export function CameraStage({
           height: recognition.frame_height,
         })
       : null;
+  const frameSize = recognition
+    ? { width: recognition.frame_width, height: recognition.frame_height }
+    : null;
+  const objectStatus = recognition?.object_detection_status;
   const cameraMissing =
     recognition?.status === "unavailable" || recognition?.status === "disabled";
 
@@ -55,6 +59,18 @@ export function CameraStage({
           <span className={`live-dot ${cameraMissing ? "live-dot--off" : ""}`} />
           <span>{recognition?.source === "fixture" ? "Fixture view" : "Live view"}</span>
         </div>
+        {objectStatus && objectStatus !== "disabled" && (
+          <span
+            className={`objects-badge objects-badge--${objectStatus}`}
+            title={recognition?.object_detection_message ?? undefined}
+          >
+            {objectStatus === "ready"
+              ? `OBJECTS · ${recognition?.objects.length ?? 0}`
+              : objectStatus === "loading"
+                ? "OBJECTS · LOADING MODEL"
+                : "OBJECTS · UNAVAILABLE"}
+          </span>
+        )}
         {recognition?.source === "fixture" && (
           <span className="fixture-badge">DEVELOPMENT FIXTURE · REAL DETECTION</span>
         )}
@@ -67,6 +83,30 @@ export function CameraStage({
             src="/api/camera/stream"
             alt="Live camera view used to recognize prepared markers"
           />
+        )}
+
+        {!cameraMissing && frameSize && (
+          <div className="object-boxes" aria-label="Detected objects">
+            {recognition?.objects.map((item, index) => {
+              const rect = mapFrameBox(item.box, stageSize, frameSize);
+              return (
+                <div
+                  key={`${item.label}-${index}`}
+                  className="object-box"
+                  style={{
+                    left: rect.x,
+                    top: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                  }}
+                >
+                  <span className="object-box__label">
+                    {item.label} {Math.round(item.confidence * 100)}%
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         )}
 
         {(cameraMissing || recognitionError) && (

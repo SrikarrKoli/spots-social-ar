@@ -40,6 +40,12 @@ export interface Detection {
   } | null;
 }
 
+export interface ObjectDetection {
+  label: string;
+  confidence: number;
+  box: [number, number, number, number];
+}
+
 export interface RecognitionResponse {
   status: "starting" | "ready" | "unavailable" | "disabled";
   source: "camera" | "fixture" | "disabled";
@@ -48,12 +54,16 @@ export interface RecognitionResponse {
   frame_width: number;
   frame_height: number;
   detections: Detection[];
+  objects: ObjectDetection[];
+  object_detection_status: "loading" | "ready" | "unavailable" | "disabled";
+  object_detection_message: string | null;
 }
 
 export interface HealthResponse {
   status: "ok";
   camera_status: string;
   camera_source: string;
+  object_detection_status: string;
   transcription_status: string;
 }
 

@@ -22,6 +22,7 @@ from .models import (
     ThreadResponse,
     TranscriptionResponse,
 )
+from .objects import build_object_detector
 from .repositories import InvalidReplyError, NotFoundError, Repository
 from .transcription import (
     TranscriptionError,
@@ -49,11 +50,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     camera = CameraService(
         source=app_settings.camera_source,
         camera_index=app_settings.camera_index,
+        camera_name=app_settings.camera_name,
         fixture_path=app_settings.camera_fixture,
         width=app_settings.camera_width,
         height=app_settings.camera_height,
         detection_ttl_ms=app_settings.detection_ttl_ms,
         dictionary_name=app_settings.marker_dictionary,
+        object_detector=build_object_detector(
+            provider=app_settings.object_detection_provider,
+            model_path=app_settings.object_model,
+            confidence=app_settings.object_confidence,
+        ),
+        object_interval_ms=app_settings.object_interval_ms,
     )
     transcription = build_transcription_provider(
         provider=app_settings.transcription_provider,
@@ -85,6 +93,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return HealthResponse(
             camera_status=camera.status,
             camera_source=camera.source,
+            object_detection_status=camera.snapshot()["object_detection_status"],
             transcription_status=transcription.status,
         )
 

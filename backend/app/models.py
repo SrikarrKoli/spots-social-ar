@@ -65,6 +65,12 @@ class Detection(BaseModel):
     preview: ConversationPreview | None = None
 
 
+class ObjectDetection(BaseModel):
+    label: str
+    confidence: float
+    box: list[float]
+
+
 class RecognitionResponse(BaseModel):
     status: Literal["starting", "ready", "unavailable", "disabled"]
     source: Literal["camera", "fixture", "disabled"]
@@ -73,12 +79,18 @@ class RecognitionResponse(BaseModel):
     frame_width: int
     frame_height: int
     detections: list[Detection]
+    objects: list[ObjectDetection] = Field(default_factory=list)
+    object_detection_status: Literal[
+        "loading", "ready", "unavailable", "disabled"
+    ] = "disabled"
+    object_detection_message: str | None = None
 
 
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     camera_status: str
     camera_source: str
+    object_detection_status: str
     transcription_status: str
 
 

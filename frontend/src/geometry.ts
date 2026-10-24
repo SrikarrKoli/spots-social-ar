@@ -41,3 +41,18 @@ export function mapFramePoint(
   const rect = containedRect(container, frame);
   return [rect.x + point[0] * rect.scale, rect.y + point[1] * rect.scale];
 }
+
+export function mapFrameBox(
+  box: [number, number, number, number],
+  container: Size,
+  frame: Size,
+): ContainedRect {
+  const rect = containedRect(container, frame);
+  return {
+    x: rect.x + box[0] * rect.scale,
+    y: rect.y + box[1] * rect.scale,
+    width: (box[2] - box[0]) * rect.scale,
+    height: (box[3] - box[1]) * rect.scale,
+    scale: rect.scale,
+  };
+}

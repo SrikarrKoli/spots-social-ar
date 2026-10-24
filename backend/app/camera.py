@@ -9,6 +9,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .objects import ObjectBox, ObjectDetector
+
 
 @dataclass(slots=True)
 class MarkerTrack:
@@ -40,6 +42,34 @@ def detect_markers(
     ]
 
 
+def video_device_names() -> list[str]:
+    """Video devices in the order OpenCV's AVFoundation backend indexes them."""
+    try:
+        import AVFoundation
+    except ImportError:
+        return []
+    devices = AVFoundation.AVCaptureDevice.devicesWithMediaType_(
+        AVFoundation.AVMediaTypeVideo
+    )
+    # AVFoundation's own order is not stable; OpenCV sorts by uniqueID.
+    devices = sorted(devices, key=lambda device: str(device.uniqueID()))
+    return [str(device.localizedName()) for device in devices]
+
+
+def resolve_camera_index(
+    name: str | None, fallback_index: int, device_names: list[str] | None = None
+) -> int:
+    """Return the index of the first device whose name contains `name`."""
+    if not name:
+        return fallback_index
+    names = video_device_names() if device_names is None else device_names
+    needle = name.casefold()
+    for index, device_name in enumerate(names):
+        if needle in device_name.casefold():
+            return index
+    return fallback_index
+
+
 class CameraService:
     """Owns one capture loop and shares its latest frame with every client."""
 
@@ -48,25 +78,38 @@ class CameraService:
         *,
         source: str,
         camera_index: int,
+        camera_name: str | None = None,
         fixture_path: Path,
         width: int,
         height: int,
         detection_ttl_ms: int,
         dictionary_name: str,
+        object_detector: ObjectDetector | None = None,
+        object_interval_ms: int = 150,
     ) -> None:
         if source not in {"camera", "fixture", "disabled"}:
             raise ValueError("Camera source must be camera, fixture, or disabled")
         self.source = source
         self.camera_index = camera_index
+        self.camera_name = camera_name
         self.fixture_path = fixture_path
         self.requested_width = width
         self.requested_height = height
         self.detection_ttl_seconds = detection_ttl_ms / 1000
         self.dictionary_name = dictionary_name
+        self.object_detector = object_detector
+        self.object_interval_seconds = object_interval_ms / 1000
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._object_thread: threading.Thread | None = None
+        self._latest_frame: np.ndarray | None = None
+        self._latest_frame_id = 0
+        self._objects: list[ObjectBox] = []
+        self._objects_seen_monotonic = 0.0
+        self._object_status = "disabled" if object_detector is None else "loading"
+        self._object_message: str | None = None
         self._capture: cv2.VideoCapture | None = None
         self._frame_jpeg: bytes | None = None
         self._frame_width = width
@@ -88,17 +131,23 @@ class CameraService:
             target=self._run, name="locus-camera", daemon=True
         )
         self._thread.start()
+        if self.object_detector is not None:
+            self._object_thread = threading.Thread(
+                target=self._run_objects, name="locus-objects", daemon=True
+            )
+            self._object_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout=2)
+        for thread in (self._thread, self._object_thread):
+            if thread is not None:
+                thread.join(timeout=2)
         capture = self._capture
         if capture is not None:
             capture.release()
             self._capture = None
         self._thread = None
+        self._object_thread = None
 
     @property
     def status(self) -> str:
@@ -123,6 +172,9 @@ class CameraService:
             self._stop.wait(0.1)
 
     def _run_camera(self) -> None:
+        self.camera_index = resolve_camera_index(
+            self.camera_name, self.camera_index
+        )
         capture = cv2.VideoCapture(self.camera_index)
         self._capture = capture
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.requested_width)
@@ -144,6 +196,41 @@ class CameraService:
 
         capture.release()
         self._capture = None
+
+    def _run_objects(self) -> None:
+        detector = self.object_detector
+        assert detector is not None
+        try:
+            detector.load()
+        except Exception as error:  # noqa: BLE001 - surfaced to the UI
+            with self._lock:
+                self._object_status = "unavailable"
+                self._object_message = f"Object detection failed to load: {error}"
+            return
+        with self._lock:
+            self._object_status = "ready"
+
+        last_frame_id = 0
+        while not self._stop.is_set():
+            with self._lock:
+                frame = self._latest_frame
+                frame_id = self._latest_frame_id
+            if frame is None or frame_id == last_frame_id:
+                self._stop.wait(0.02)
+                continue
+            last_frame_id = frame_id
+            started = time.monotonic()
+            try:
+                objects = detector.detect(frame)
+            except Exception as error:  # noqa: BLE001 - keep the loop alive
+                with self._lock:
+                    self._object_message = f"Object detection error: {error}"
+                objects = []
+            with self._lock:
+                self._objects = objects
+                self._objects_seen_monotonic = time.monotonic()
+            elapsed = time.monotonic() - started
+            self._stop.wait(max(0.0, self.object_interval_seconds - elapsed))
 
     def _mark_unavailable(self, message: str) -> None:
         with self._lock:
@@ -169,6 +256,8 @@ class CameraService:
             self._frame_width = width
             self._frame_height = height
             self._captured_at = datetime.now(UTC)
+            self._latest_frame = frame
+            self._latest_frame_id += 1
             self._status = "ready"
             self._message = (
                 "Development fixture — real marker detection"
@@ -212,6 +301,19 @@ class CameraService:
                     item["marker_id"],
                 )
             )
+            objects = (
+                [
+                    {
+                        "label": item.label,
+                        "confidence": item.confidence,
+                        "box": list(item.box),
+                    }
+                    for item in self._objects
+                ]
+                if time.monotonic() - self._objects_seen_monotonic
+                <= self.detection_ttl_seconds
+                else []
+            )
             return {
                 "status": self._status,
                 "source": self.source,
@@ -220,6 +322,9 @@ class CameraService:
                 "frame_width": self._frame_width,
                 "frame_height": self._frame_height,
                 "detections": detections,
+                "objects": objects,
+                "object_detection_status": self._object_status,
+                "object_detection_message": self._object_message,
             }
 
     def latest_jpeg(self) -> bytes | None:
