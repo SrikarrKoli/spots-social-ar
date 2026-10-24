@@ -6,8 +6,35 @@ printed ArUco markers, and the browser places a compact conversation preview
 beside the recognized object. People can open the thread, record or type a
 message, review it, and publish it for another browser session to see.
 
-This repository is currently in the planning stage. The implementation plan
-below prioritizes the complete three-minute demo over additional features.
+The MVP is implemented and runnable. The sections below document the product,
+architecture, setup, verification, and three-minute demo flow.
+
+## Quick start
+
+Prerequisites: Python 3.11, Node 18+, `uv`, a webcam for hardware mode, and a
+modern Chromium/Firefox browser for microphone recording.
+
+```bash
+# From the repository root
+cp .env.example .env
+uv sync
+.venv/bin/python scripts/generate_markers.py
+.venv/bin/python -m backend.app.seed
+
+# Build the frontend for same-origin serving (include dev overrides a local
+# npm config that may omit build tools)
+cd frontend
+npm install --include=dev
+npm run build
+cd ..
+
+# Start the full app at http://127.0.0.1:8000
+uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --env-file .env
+```
+
+If a webcam is unavailable, set `APP_CAMERA_SOURCE=fixture` in `.env`. The UI
+will visibly label fixture mode, and OpenCV will still detect the real markers
+inside `markers/demo-fixture.png`.
 
 ## Demo outcome
 
@@ -52,7 +79,7 @@ configured. The UI must never substitute canned text for a real transcript.
 - Real-time streaming transcription and unconstrained AI-generated messages.
 - More than one reply nesting level.
 
-## Proposed architecture
+## Architecture
 
 ```text
 glasses webcam ──> CameraService (single OpenCV capture loop)
@@ -92,26 +119,24 @@ The implementation will use this structure:
 ```text
 backend/
   app/
-    api/                 # FastAPI route modules
     camera.py            # shared capture, detection, fixture mode
     config.py            # environment-backed settings
-    database.py          # SQLite connection and migrations/schema setup
+    database.py          # SQLite connection, schema, seed, and reset
     main.py              # app lifecycle and static frontend serving
     models.py            # typed request/response models
     repositories.py      # database queries and integrity checks
     seed.py              # idempotent seed and explicit reset
     transcription.py     # provider protocol and implementations
-  tests/
+  tests/                 # API, persistence, integrity, and recognition tests
 frontend/
   src/
     components/          # camera stage, overlay, thread, composer, profiles
-    hooks/               # polling, recording, device enumeration
+    hooks/               # polling
     api.ts               # typed API client
     geometry.ts          # letterbox and marker transforms
     types.ts
     App.tsx
-  tests/
-markers/                 # generated printable PNG/PDF marker assets
+markers/                 # generated marker PNGs, printable SVG, and fixture
 scripts/                 # marker generation and demo helpers
 specs/                   # implementation spec and completion checklist
 .env.example
@@ -134,12 +159,13 @@ validated in the service transaction, not trusted from the browser. Message
 bodies will have a small minimum and a reasonable maximum length. The API will
 return posts in stable server order with replies grouped under their parent.
 
-## Planned API
+## API
 
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Service, camera, and transcription readiness |
 | `GET` | `/api/profiles` | List seeded demo identities and Guest |
+| `GET` | `/api/objects` | List prepared demo objects for camera-free clients |
 | `GET` | `/api/recognition` | Latest frame metadata and timestamped detections |
 | `GET` | `/api/camera/stream` | Shared MJPEG camera stream |
 | `GET` | `/api/objects/by-marker/{marker_id}` | Resolve a registered marker |
@@ -151,9 +177,9 @@ The frontend will poll recognition frequently enough for responsive overlays
 and poll an open thread at a lower frequency for cross-session updates. Requests
 will be cancelled or ignored when their owning view is replaced.
 
-## Transcription plan
+## Transcription
 
-The UI and route depend on a small `TranscriptionProvider` interface. Planned
+The UI and route depend on a small `TranscriptionProvider` interface. Implemented
 providers are:
 
 - `disabled`: returns an explicit “transcription is not configured” error while
@@ -161,10 +187,11 @@ providers are:
 - `openai`: sends the browser's completed WebM recording to the official audio
   transcription endpoint using a backend-only API key and configurable model.
 
-The default proposed OpenAI model is `gpt-4o-mini-transcribe`. The current
-[official OpenAI Audio API reference](https://developers.openai.com/api/reference/resources/audio)
-documents WebM input, `POST /audio/transcriptions`, and a text response. Exact
-SDK usage will be pinned and verified during implementation.
+The default OpenAI model is `gpt-transcribe`. The current
+[official OpenAI file-transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text)
+recommends that model for completed recordings and documents WebM input and
+`POST /v1/audio/transcriptions`. The older `gpt-4o-mini-transcribe` model is
+deprecated for February 26, 2027, so it is not the default.
 
 No Meta Muse endpoint will be implemented unless official documentation or a
 provided integration example verifies its URL, authentication, and request
@@ -202,7 +229,7 @@ Marker generation will produce labeled, printable assets containing the object
 title and numeric marker ID. `reset-demo` will recreate the known seed state;
 normal application startup will never delete user-created posts.
 
-## Implementation sequence
+## Implementation sequence completed
 
 ### Phase 0 — project foundation
 
@@ -271,20 +298,17 @@ normal application startup will never delete user-created posts.
 Hardware-dependent results will be reported separately from fixture and
 automated checks.
 
-## Planned local commands
-
-The precise commands will be finalized after scaffolding and dependency
-installation. The intended interface is:
+## Commands
 
 ```bash
 # Backend setup and development server
 uv sync
 uv run python -m backend.app.seed
-uv run uvicorn backend.app.main:app --reload
+uv run uvicorn backend.app.main:app --reload --env-file .env
 
 # Frontend development server
 cd frontend
-npm install
+npm install --include=dev
 npm run dev
 
 # Verification
@@ -295,10 +319,11 @@ cd frontend && npm test && npm run build
 uv run python -m backend.app.seed --reset
 ```
 
-The production-shaped development path will build the frontend and let FastAPI
-serve the static assets from the same origin.
+The production-shaped local path builds the frontend and lets FastAPI serve the
+static assets from the same origin. For frontend hot reload, run Vite separately
+with `npm run dev`; its `/api` proxy targets FastAPI on port 8000.
 
-## Planned environment variables
+## Environment variables
 
 ```dotenv
 # Core
@@ -312,7 +337,7 @@ APP_DETECTION_TTL_MS=750
 # Transcription
 APP_TRANSCRIPTION_PROVIDER=disabled
 OPENAI_API_KEY=
-OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
+OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe
 ```
 
 `APP_CAMERA_SOURCE=fixture` will require `APP_CAMERA_FIXTURE` to point to an
@@ -323,8 +348,8 @@ in the UI and will not fabricate recognition results.
 
 - **Camera backend differences:** isolate OpenCV capture setup, expose camera
   readiness, and retain fixture mode for development.
-- **ArUco availability:** use the OpenCV contrib build and test the exact marker
-  APIs after pinning the package.
+- **ArUco availability:** `opencv-contrib-python-headless` is pinned and its
+  exact detector/generator APIs are covered by a real-pixel regression test.
 - **Browser recording formats:** accept the browser-provided MIME type and use
   a documented transcription-supported container such as WebM.
 - **Head movement changes targets:** freeze object and parent IDs at composer
@@ -351,10 +376,13 @@ in the UI and will not fabricate recognition results.
 ## Current status
 
 - [x] Product brief translated into an implementation plan.
-- [ ] Project scaffolded.
-- [ ] Camera and real marker recognition implemented.
-- [ ] Seeded conversations and typed posting implemented.
-- [ ] Multi-client updates verified.
-- [ ] Recording, transcription review, and publishing implemented.
-- [ ] Browser and hardware verification completed.
+- [x] Project scaffolded with pinned Python and Node dependencies.
+- [x] Shared camera owner and real marker recognition implemented.
+- [x] Seeded conversations, typed posting, reply validation, and reset implemented.
+- [x] Multi-client API update flow verified against the running fixture server.
+- [x] Recording, configurable transcription, editable review, and publishing implemented.
+- [x] Backend tests, frontend tests, strict TypeScript, production build, marker
+  assets, and a zero-vulnerability npm audit completed.
+- [ ] Physical webcam, glasses microphone, live OpenAI credentials, and visual
+  browser inspection still require the target demo hardware/environment.
 
