@@ -19,6 +19,10 @@ architecture, setup, verification, and three-minute demo flow.
 
 [Spots — HackTX 2026 pitch deck](docs/presentations/Spots-HackTX-2026.pptx)
 
+## Optional development plans
+
+[Conversational voice options](docs/plans/conversational-voice-options.md) explains a proposed local Kokoro speech option, integration points, tradeoffs and validation. It is a plan, not a shipped feature.
+
 ## Quick start
 
 Prerequisites: Python 3.11, Node 24+, `uv`, a webcam for hardware mode, and a
