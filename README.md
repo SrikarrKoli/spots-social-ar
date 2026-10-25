@@ -1,513 +1,82 @@
-# Spots — Conversations on Physical Objects
+# Spots
 
-Spots (originally Locus) is a hackathon MVP for attaching social conversations to real-world
-objects. A glasses-mounted webcam sends video to a laptop, the backend
-**recognises enrolled objects by their own appearance** (no printed markers),
-and the browser places a compact conversation preview beside the recognised
-object. People can open the thread, record or type a message, review it, and
-publish it for another browser session to see.
+Spots lets people leave notes on physical objects and discover what someone else
+had to say about them. A concert poster could hold “Anyone going Friday?”; someone
+who sees it later can reply and start a conversation.
 
-Recognition is *instance* recognition, not classification: Locus answers
-"which specific object is this?" (this book, this poster), never just
-"what kind of thing is this?" — so two objects of the same class keep
-separate conversations, and a conversation follows its object when it moves.
+This HackTX prototype uses a camera, a laptop and a browser to demonstrate the
+experience we want to bring to **Meta Ray-Ban Display**. The browser has Phone and
+Glasses views. The Instagram-style Phone interface is a demo mock, not a real
+Instagram integration. Labels such as “Ask Meta AI” are part of that interface;
+the conversational model actually runs locally through Ollama.
 
-The MVP is implemented and runnable. The sections below document the product,
-architecture, setup, verification, and three-minute demo flow.
+## Latest voice integration
 
-## HackTX presentation
+The team has added **local Kokoro speech with the Heart voice** on
+[`seamless-voice-notes`](https://github.com/arnavvalvekar/meta-glasses-notes/tree/seamless-voice-notes).
+That integration is awaiting a merge into main. The setup below first describes
+main, followed by the exact Kokoro branch setup. This README update does not
+merge application code.
 
-[Spots — HackTX 2026 pitch deck (latest version)](https://utexas-my.sharepoint.com/:p:/r/personal/sk62334_eid_utexas_edu/Documents/Spots-HackTX-2026.pptx?d=w6ec8edb0e7fe484fa7e131866ae70859&csf=1&web=1&e=TzDPEg)
+## Presentation and plans
 
-## Optional development plans
+- [Latest HackTX presentation](https://utexas-my.sharepoint.com/:p:/r/personal/sk62334_eid_utexas_edu/Documents/Spots-HackTX-2026.pptx?d=w6ec8edb0e7fe484fa7e131866ae70859&csf=1&web=1&e=TzDPEg)
+- [Object identity and background-leakage findings](docs/architecture/object-identity.md)
+- [Conversational voice design and evaluation plan](docs/plans/conversational-voice-options.md)
+- [Performance design and tooling](specs/performance-optimization.md)
+- [Earlier implementation handoff](HANDOFF.md) and [MVP specification](specs/hackathon-mvp.md)
 
-[Conversational voice options](docs/plans/conversational-voice-options.md) explains a proposed local Kokoro speech option, integration points, tradeoffs and validation. It is a plan, not a shipped feature.
+The voice plan records the rationale and testing approach that preceded the
+Kokoro branch. Its proposed status is historical context; use the branch code
+and the Kokoro section below for the implemented speech path. SAM 2 and DINOv2
+remain proposed recognition work. Main still uses browser speech until the
+voice branch is merged.
+
+## What works in the prototype
+
+- Markerless matching against enrolled reference images using SIFT/ORB and homography.
+- Short-lived optical-flow tracking to keep overlays aligned between identity checks.
+- Persistent object notes and replies, typed or transcribed from recorded audio.
+- Local camera-aware conversation using Qwen through Ollama.
+- Local Kokoro Heart speech for assistant replies and note read-aloud on the voice branch, with browser speech available as a fallback.
+- Spoken requests to create, read, rename, edit, delete and undo supported note actions.
+- Live-camera enrollment and a staged scan/review API for adding object views.
+- SQLite persistence and polling so separate browser clients can retrieve saved notes.
+- Seeded profiles and restaurant examples for demonstrating the social interface.
+
+Recognition is still being improved. References can include background features,
+so a match is **not proof of reliable object-only identity**. See the
+[reproduced background-leakage issue](docs/architecture/object-identity.md) before
+relying on moved-object or different-background behavior. Low texture, occlusion,
+large viewpoint changes and visually identical copies remain difficult cases.
+The system has confidence tiers and unknown states, but false matches are possible.
 
 ## Quick start
 
-Prerequisites: Python 3.11, Node 24+, `uv`, a webcam for hardware mode, and a
-modern Chromium/Firefox browser for microphone recording.
+### Requirements
 
-```bash
-# From the repository root
-cp .env.example .env
-uv sync
-.venv/bin/python scripts/generate_references.py
-.venv/bin/python -m backend.app.seed
+- Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/).
+- Node.js 24+ and npm, as required by the frontend package.
+- A webcam for the live Glasses experience; set the correct camera index below.
+- A browser with microphone recording and speech-synthesis support. Chrome is a
+  practical demo choice; allow microphone access and check the computer's sound output.
+- For AI conversation: [Ollama](https://ollama.com/download) and the configured
+  vision-capable model. For spoken input: a configured transcription provider.
 
-# Build the frontend for same-origin serving (include dev overrides a local
-# npm config that may omit build tools)
-cd frontend
-npm install --include=dev
-npm run build
-cd ..
+### 1. Configure the app
 
-# Start the full app at http://127.0.0.1:8000
-uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --env-file .env
+From the repository root, copy `.env.example` to `.env` **if you do not already
+have a local `.env`**. Keep existing credentials and demo data.
+
+```sh
+cp -n .env.example .env
 ```
 
-If a webcam is unavailable, set `APP_CAMERA_SOURCE=fixture` in `.env`. The UI
-will visibly label fixture mode, and OpenCV will still recognise the real
-enrolled objects inside `markers/markerless-fixture.png`.
-
-## Demo outcome
-
-The MVP is successful when this flow works end to end:
-
-1. A judge looks at a prepared concert poster (no marker attached).
-2. The laptop camera view recognises the poster by its own artwork and shows its thread.
-3. The seeded post “Anyone want to go Friday?” is visible.
-4. The judge records a spoken reply and stops the recording.
-5. The transcript is shown in an editable confirmation step.
-6. The judge confirms the message.
-7. The reply persists in SQLite and appears in a second browser session without
-   a manual refresh.
-
-Typed messages remain fully functional when transcription credentials are not
-configured. The UI must never substitute canned text for a real transcript.
-
-## Product boundaries
-
-### In scope
-
-- One shared backend webcam capture with configurable camera index.
-- Real markerless instance recognition (local features + homography) and
-  timestamped object coordinates, with confidence and an explicit unknown state.
-- Enrolled objects mapped one-to-one to seeded physical objects; new objects
-  are enrolled **from the live camera** — the wearer looks at the object for
-  ~4s while the backend burst-captures sharp, centred, diverse views
-  (`POST /api/objects/enroll-live`). Photo upload (`POST /api/objects/enroll`)
-  remains only as a dev/test harness for building regression image sets. No
-  printed marker is ever attached.
-- Predictable active-object selection with manual switching when several are
-  visible.
-- A floating preview positioned correctly over scaled, letterboxed video.
-- A persistent side-panel thread with top-level posts and one reply level.
-- Seeded demo identities plus Guest; these are simulated profiles, not auth.
-- Typed posts and replies with review, validation, and failure recovery.
-- Browser audio recording from a selectable microphone.
-- Backend transcription through a narrow, configurable provider adapter.
-- Short polling so other browser sessions receive conversation updates.
-- A clearly labeled fixture mode that still runs real object recognition.
-- Enrolment reference images, repeatable seeding, and an explicit demo reset.
-
-### Deliberately out of scope
-
-- Follows, likes, direct messages, signup, or production authentication.
-- Arbitrary object registration beyond photo enrolment, or zero-shot recognition
-  of objects that were never enrolled.
-- Distinguishing two visually identical, unmarked copies of the same item
-  (camera-only systems cannot; Locus reports `unknown` instead of guessing).
-- 3D mapping, spatial persistence, native mobile clients, or glasses displays.
-- Real-time streaming transcription and automatic spoken interruption during playback.
-- More than one reply nesting level.
-
-## Architecture
-
-```text
-glasses webcam ──> CameraService (single OpenCV capture loop)
-                         │
-                         ├── latest JPEG frame ──> MJPEG endpoint ──> <img>
-                         └── recognition snapshots ──> JSON polling ──> overlays
-
-browser microphone ──> MediaRecorder ──> /api/transcriptions
-                                             │
-                                             └── TranscriptionProvider
-                                                  └── OpenAI or disabled
-
-React client ──> FastAPI JSON API ──> service/repository layer ──> SQLite
-```
-
-The backend owns exactly one camera capture. Browser clients consume the same
-MJPEG stream and poll the latest recognition snapshot, avoiding per-client
-camera handles and unnecessary streaming infrastructure. Camera resources are
-opened during application startup and released during shutdown.
-
-The frontend uses the frame's intrinsic width and height together with the
-rendered container dimensions to calculate `object-fit: contain` letterboxing.
-Object corner coordinates are transformed through the same scale and offset.
-Detections are smoothed over a short window and expire after a small timeout.
-Video is not mirrored.
-
-Recognition is instance recognition behind a `Recognizer` interface
-([backend/app/recognition.py](backend/app/recognition.py)): enrolled reference views are
-matched with local features (SIFT/ORB) and a homography, the winner must clear
-a confidence threshold and beat the runner-up by a margin, and anything else
-is reported as unknown rather than force-matched to the nearest object. The
-legacy ArUco recognizer remains available (`APP_RECOGNIZER=aruco`) only as a
-dev/test fixture and is not part of the demo.
-
-Confidence is tiered: **high** sightings attach seamlessly, **provisional**
-(medium) sightings are shown as "possible match" and only attach/bank a view
-after the user confirms them, and **low** sightings stay unknown. Sightings
-must repeat across frames before they are published (temporal voting), and a
-confirmed high-confidence track that rotates banks its new angle as an extra
-enrolled view — identity inherited from track continuity, never from a
-fresh guess — so recognition improves the longer an object is looked at.
-Enrolment references are CLAHE-normalised and stored at webcam scale plus
-one half scale, so phone-sized photos and 720p frames meet in the middle.
-
-When multiple enrolled objects are visible, the default active object is the
-one whose center is closest to the frame center. The user can choose another
-visible object. Opening a thread or beginning composition captures an immutable
-object ID and optional parent-post ID so later recognition changes cannot alter
-the publish target.
-
-## Repository layout
-
-The implementation will use this structure:
-
-```text
-backend/
-  app/
-    camera.py            # shared capture, tracking, fixture mode
-    recognition.py       # Recognizer interface; markerless instance matching
-    config.py            # environment-backed settings
-    database.py          # SQLite connection, schema, seed, and reset
-    main.py              # app lifecycle and static frontend serving
-    models.py            # typed request/response models
-    repositories.py      # database queries and integrity checks
-    seed.py              # idempotent seed and explicit reset
-    transcription.py     # provider protocol and implementations
-  tests/                 # API, persistence, integrity, and recognition tests
-frontend/
-  src/
-    components/          # camera stage, overlay, thread, composer, profiles
-    hooks/               # polling
-    api.ts               # typed API client
-    geometry.ts          # letterbox and object-corner transforms
-    types.ts
-    App.tsx
-objects/                 # enrolment reference artwork (poster, book cover)
-markers/                 # markerless fixture (legacy ArUco assets retained)
-scripts/                 # reference/fixture generation and demo helpers
-specs/                   # implementation spec and completion checklist
-.env.example
-README.md
-HANDOFF.md
-```
-
-## Data model
-
-SQLite stores three core entities:
-
-| Entity | Fields and invariants |
-| --- | --- |
-| User | `id`, unique `display_name`, initials/avatar presentation |
-| Object | `id`, unique `identity_key`, `identity_kind`, `reference_path`, `title`, optional `description` (legacy `marker_id` retained for migration only) |
-| Fingerprint | `object_id`, `kind`, `reference_path` or embedding blob — the enrolled views used for instance matching |
-| Post | `id`, `object_id`, `author_id`, trimmed `body`, server timestamp, nullable `parent_post_id` |
-
-A reply must point to a top-level post belonging to the same object. This is
-validated in the service transaction, not trusted from the browser. Message
-bodies will have a small minimum and a reasonable maximum length. The API will
-return posts in stable server order with replies grouped under their parent.
-
-## API
-
-| Method | Route | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/health` | Service, camera, and transcription readiness |
-| `GET` | `/api/profiles` | List seeded demo identities and Guest |
-| `GET` | `/api/objects` | List prepared demo objects for camera-free clients |
-| `GET` | `/api/recognition` | Latest frame metadata and timestamped detections |
-| `GET` | `/api/camera/stream` | Shared MJPEG camera stream |
-| `GET` | `/api/objects/by-identity/{identity_key}` | Resolve an enrolled object |
-| `POST` | `/api/objects/enroll` | Dev/test only: enrol a new object from an uploaded photo (multipart) |
-| `POST` | `/api/objects/enroll-live/scan` | Stage 1 of creating an object by looking: burst-scan into a pending scan (nothing persisted) |
-| `POST` | `/api/objects/enroll-live/scans/{scan_id}/more` | Add another angle burst to a pending scan |
-| `DELETE` | `/api/objects/enroll-live/scans/{scan_id}` | Drop a pending scan |
-| `POST` | `/api/objects/enroll-live` | Stage 2: create the object from a reviewed scan (`{scan_id, title}`) |
-| `POST` | `/api/objects/{object_id}/add-views` | Bank another live burst of views under an existing object |
-| `DELETE` | `/api/objects/{object_id}` | Discard an enrolment (refused if it has posts or is seeded) |
-| `POST` | `/api/recognition/confirm` | Confirm a provisional (medium-confidence) sighting; banks that view |
-| `GET` | `/api/objects/{object_id}/posts` | Fetch a thread with replies and revision timestamp |
-| `POST` | `/api/objects/{object_id}/posts` | Create a top-level post or validated reply |
-| `POST` | `/api/transcriptions` | Transcribe a completed browser audio recording |
-
-The frontend will poll recognition frequently enough for responsive overlays
-and poll an open thread at a lower frequency for cross-session updates. Requests
-will be cancelled or ignored when their owning view is replaced.
-
-## Transcription
-
-The UI and route depend on a small `TranscriptionProvider` interface. Implemented
-providers are:
-
-- `disabled`: returns an explicit “transcription is not configured” error while
-  typed composition continues to work.
-- `openai`: sends the browser's completed WebM recording to the official audio
-  transcription endpoint using a backend-only API key and configurable model.
-- `faster-whisper`: transcribes locally with one backend-owned Whisper model;
-  no API key or cloud request is used. Model inference runs in a worker thread
-  so it does not block FastAPI's event loop.
-
-The default OpenAI model is `gpt-transcribe`. The current
-[official OpenAI file-transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text)
-recommends that model for completed recordings and documents WebM input and
-`POST /v1/audio/transcriptions`. The older `gpt-4o-mini-transcribe` model is
-deprecated for February 26, 2027, so it is not the default.
-
-The local default is `medium` on CPU with `int8` computation. The model is
-loaded once when the backend starts, so startup is slower and the first run may
-download model files if they are not already cached. This demo laptop already
-has the `Systran/faster-whisper-medium` model cached.
-
-No Meta Muse endpoint will be implemented unless official documentation or a
-provided integration example verifies its URL, authentication, and request
-shape. Provider secrets remain on the backend.
-
-## User experience and states
-
-The desktop layout has a large camera stage and a narrower persistent thread
-panel. A small profile selector sits in the top bar. The visual direction is
-warm, high-contrast, and minimal: dark camera framing, light content surfaces,
-one coral accent, readable type, and restrained transitions.
-
-The UI explicitly represents:
-
-- starting camera, ready camera, unavailable camera, and labeled fixture mode;
-- no registered object recognized and one or several objects visible;
-- open thread locked to a named object even after the object leaves view;
-- idle, recording, transcribing, transcript review, saving, and save failure;
-- microphone permission denied or no input devices;
-- retry and cancel without losing an editable draft;
-- disabled submit controls while a save is pending.
-
-React renders message bodies as plain text. No untrusted HTML is accepted.
-
-## Seeded demo content
-
-The idempotent seed will create:
-
-- Concert poster: top-level post “Anyone want to go Friday?” and a sample reply.
-- Book: a short recommendation and a sample response.
-- Named profiles such as Maya, Theo, and Lina, plus Guest.
-- A distinct enrolled identity (its own artwork/cover) for every object.
-
-Reference generation (`scripts/generate_references.py`) produces the poster
-artwork and book cover in `objects/` plus the markerless fixture; those images
-*are* the enrolled objects, so nothing is printed or attached. Enrolling a new
-object in the UI stores its photo under `APP_ENROLLED_DIR`. `reset-demo` will
-recreate the known seed state; normal application startup will never delete
-user-created posts.
-
-## Implementation sequence completed
-
-### Phase 0 — project foundation
-
-- Record the feature spec and verification checklist.
-- Scaffold FastAPI, React, TypeScript, Vite, SQLite, and test tooling.
-- Pin compatible versions, add `.env.example`, and expose one development start
-  command per process.
-
-### Phase 1 — camera and recognition
-
-- Implement the one-owner capture loop and clean lifecycle shutdown.
-- Recognise enrolled objects by appearance with OpenCV and publish timestamped frame metadata.
-- Add MJPEG transport and fixture input using the same recognition path.
-- Generate enrolment reference artwork and the markerless fixture.
-- Verify real recognition against generated fixture imagery.
-
-### Phase 2 — persistence and conversations
-
-- Create the schema, seed/reset commands, repositories, and API models.
-- Resolve enrolled identities to objects and show the seeded conversation.
-- Implement typed top-level posts and replies.
-- Enforce object/parent consistency, message limits, and server timestamps.
-- Verify persistence across restart and polling across two clients.
-
-### Phase 3 — recording and transcription
-
-- Enumerate microphone inputs and record click-to-start/click-to-stop audio.
-- Capture the object and reply target when composition starts.
-- Send completed audio to the provider adapter.
-- Add editable transcript review with Post, Retry, and Cancel.
-- Keep typed composition available in disabled-provider mode.
-
-### Phase 4 — overlay correctness and polish
-
-- Implement letterbox-aware coordinate transforms and jitter smoothing.
-- Expire stale previews, support multiple visible objects, and retain open
-  threads when recognition disappears.
-- Add all loading/error/empty states and responsive desktop styling.
-- Inspect the complete flow in a browser and correct accessibility issues.
-
-### Phase 5 — verification and handoff
-
-- Run backend tests, frontend tests/type checks, and a production build.
-- Exercise the API with a temporary database.
-- Test two browser sessions and the full typed flow.
-- Test browser recording and the disabled-provider experience.
-- Record which camera, microphone, and provider checks were run on hardware.
-- Update `HANDOFF.md` and add the final three-minute demo script below.
-
-## Verification matrix
-
-| Area | Required evidence |
-| --- | --- |
-| Recognition | Enrolled objects are recognised with identity/corners/confidence, swapped positions keep the correct threads, and stale results expire |
-| Unknown handling | An unenrolled or ambiguous object produces no forced match |
-| Camera ownership | Multiple stream clients do not create multiple capture handles |
-| Overlay | Known frame points map correctly under wide and tall letterboxing |
-| Persistence | A created post survives application restart |
-| Reply integrity | Cross-object and reply-to-reply attempts are rejected |
-| Target lock | Recognition changes during recording cannot change object or parent IDs |
-| Multi-client | A second client receives a new message through polling |
-| Audio | Real browser audio reaches the backend as a supported file type |
-| Transcription | Configured provider returns actual text; disabled mode is explicit |
-| Resilience | Failed saves retain the draft and duplicate submits are prevented |
-| Build quality | Backend tests, frontend tests, type checking, and production build pass |
-
-Hardware-dependent results will be reported separately from fixture and
-automated checks.
-
-## Commands
-
-```bash
-# Backend setup and development server
-uv sync
-uv run python -m backend.app.seed
-uv run uvicorn backend.app.main:app --reload --env-file .env
-
-# Frontend development server
-cd frontend
-npm install --include=dev
-npm run dev
-
-# Verification
-uv run pytest
-cd frontend && npm test && npm run build
-
-# Restore the known hackathon demo state (explicit and destructive)
-uv run python -m backend.app.seed --reset
-```
-
-The production-shaped local path builds the frontend and lets FastAPI serve the
-static assets from the same origin. For frontend hot reload, run Vite separately
-with `npm run dev`; its `/api` proxy targets FastAPI on port 8000.
-
-## Environment variables
+For the local voice demo, edit these values in `.env`:
 
 ```dotenv
-# Core
-APP_DATABASE_PATH=./data/locus.db
+APP_CAMERA_SOURCE=camera
 APP_CAMERA_INDEX=0
-APP_CAMERA_SOURCE=camera
-APP_CAMERA_FIXTURE=
-APP_RECOGNIZER=instance
-APP_ENROLLED_DIR=./data/enrolled
-APP_MARKER_DICTIONARY=DICT_4X4_50
-APP_DETECTION_TTL_MS=2000
-
-# Transcription
-APP_TRANSCRIPTION_PROVIDER=faster-whisper
-APP_WHISPER_MODEL=medium
-APP_WHISPER_DEVICE=cpu
-APP_WHISPER_COMPUTE_TYPE=int8
-
-# Only used when APP_TRANSCRIPTION_PROVIDER=openai
-OPENAI_API_KEY=
-OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe
-```
-
-`APP_CAMERA_SOURCE=fixture` will require `APP_CAMERA_FIXTURE` to point to an
-image or video containing enrolled objects (default
-`markers/markerless-fixture.png`). It will be visibly labeled in the UI and
-will not fabricate recognition results.
-
-## Risks and mitigations
-
-- **Camera backend differences:** isolate OpenCV capture setup, expose camera
-  readiness, and retain fixture mode for development.
-- **Feature-matching availability:** `opencv-contrib-python-headless` is pinned
-  (SIFT when present, ORB fallback) and its matching/homography path is covered
-  by a real-pixel regression test on the generated fixture.
-- **Weak-texture or identical objects:** matching needs visible texture, and two
-  visually identical unmarked items cannot be told apart by any camera-only
-  system — Locus reports unknown instead of attaching the wrong thread.
-- **Browser recording formats:** accept the browser-provided MIME type and use
-  a documented transcription-supported container such as WebM.
-- **Head movement changes targets:** freeze object and parent IDs at composer
-  creation and display the locked object throughout review.
-- **Recognition jitter:** smooth object centers/corners briefly and expire by
-  server timestamp instead of keeping a ghost overlay.
-- **Provider credentials unavailable:** make typed posting demo-complete and
-  label transcription as unconfigured rather than simulating it.
-- **Concurrent demo writes:** keep each post creation in one SQLite transaction,
-  enable foreign keys, and use a short busy timeout/WAL where appropriate.
-
-## Three-minute demo script (target)
-
-1. Open Locus in two browser windows and select different demo profiles.
-2. Put on the camera glasses and face the concert poster — note there is no
-   marker on it; Locus recognises the poster by its own artwork.
-3. Point out the anchored preview and open the “Concert poster” thread.
-4. Show Maya's “Anyone want to go Friday?” post and choose Reply.
-5. Record “I’m in — doors open at seven,” then stop.
-6. Edit or approve the real transcript and press Post.
-7. Show the reply appear in the first window and then in the second window via
-   polling, demonstrating that the conversation is attached to that specific
-   physical object — not its category, and not its location — and persisted
-   for another person.
-8. If time allows: move the book and show its thread follows it, then hold up
-   an unenrolled book and show Locus says unknown instead of guessing.
-9. Voice beat (webcam/glasses microphone selected in the 🎙 mic picker):
-   push-to-talk and say “open the book”, dictate a post in the open thread,
-   review the transcript, then push-to-talk and say “post it”. Hold up a
-   possible match and say “yes that's it” to confirm it, and say
-   “read the thread” to hear the thread read aloud. Speech alone never
-   publishes — every post needs “post it” or the Post button.
-
-## Demo vs. the scalable (pitch) version
-
-The demo proves the hard part — a conversation stays attached to one specific
-object, with no tag on it. It does so with a laptop camera, 2D overlay, and a
-small enrolled set under controlled lighting. The proposed glasses version
-keeps the same object-keyed data model (`posts.object_id`) and swaps the
-surrounding layers: on-device instance embeddings instead of laptop feature
-matching, SLAM + 6DoF object pose instead of a 2D centre so the note is
-rendered on the object in-glasses and follows it, persistent spatial/cloud
-anchors for fixed *places* (walls, desks), and a shared cloud registry of
-enrolled objects. In short: identity here, anchoring in AR there — the demo
-does not claim to be the AR product.
-
-## Current status
-
-- [x] Product brief translated into an implementation plan.
-- [x] Project scaffolded with pinned Python and Node dependencies.
-- [x] Shared camera owner and real markerless instance recognition implemented.
-- [x] Seeded conversations, typed posting, reply validation, and reset implemented.
-- [x] Multi-client API update flow verified against the running fixture server.
-- [x] Recording, configurable transcription, editable review, and publishing implemented.
-- [x] Backend tests, frontend tests, strict TypeScript, production build, enrolment
-  reference assets, and a zero-vulnerability npm audit completed.
-- [ ] Physical webcam, glasses microphone, live local transcription, and visual
-  browser inspection still require the target demo hardware/environment.
-
-
-## Spots: Brio 100 and MacBook voice demo
-
-The desktop UI now uses the Spots name and opens in **Talk to Spots** mode.
-The separate notes tab has been removed. **Open thread** and the saved-object
-list still open persistent posts and replies. Unknown visual identification
-asks for a description, then saves the user’s next description as a note. In Talk to Spots, saying “take a note: …”
-saves directly to the object currently in view and enrolls a new object if needed.
-Notes are stored in SQLite without an expiry; camera recognition expiring never
-deletes a note. Keep the database and enrolled reference images to retain memories.
-
-Start with `./scripts/start_local.sh`, then visit http://127.0.0.1:8000.
-The launcher builds the UI and runs one backend (do not run multiple workers
-against the same webcam). It preserves the existing database and `.env`.
-For this Mac, AVFoundation enumerated the Brio 100 at index 1. Device indices
-can change when hardware changes. Check the preview after reconnecting.
-Camera permission is requested from the main thread on macOS.
-
-Local configuration used for the working demo:
-
-```dotenv
-APP_CAMERA_SOURCE=camera
-APP_CAMERA_INDEX=1
 APP_RECOGNIZER=instance
 APP_TRANSCRIPTION_PROVIDER=faster-whisper
 APP_WHISPER_MODEL=small.en
@@ -515,97 +84,414 @@ APP_WHISPER_DEVICE=cpu
 APP_WHISPER_COMPUTE_TYPE=int8
 APP_ASSISTANT_MODEL=qwen3.5:4b
 APP_OLLAMA_URL=http://127.0.0.1:11434
+APP_LLM_PARSER_ENABLED=true
 ```
 
-Ollama must be running with the selected vision model installed (`ollama list`).
-The configured Ollama URL is a trusted backend setting. With the loopback URL
-above, speech transcription and image conversation run locally without an API
-key. The Whisper model downloads on its first use. `small.en` is an English model
-selected for faster CPU turns; use a multilingual Whisper model for other languages.
+`small.en` is an English-only option for quicker CPU turns. The code's local
+Whisper default is `medium`. The checked-in `.env.example` defaults transcription
+to `disabled`, so copying it alone does not enable voice input. Use a multilingual
+Whisper model when needed. Camera index `0` is only a starting point; a connected
+Brio or other external camera may use another index.
 
-1. Open Talk to Spots. Allow microphone permission, then select Brio 100 or the
-   MacBook microphone in the microphone picker. macOS Sound output should be
-   MacBook Pro Speakers. Use **Test speakers** to check playback.
-2. **Ask by voice** starts recording; **Finish question** submits the turn.
-   **Start hands-free** instead detects the end of speech after a pause, then
-   transcribes, answers, speaks, and listens again. **Stop** cancels the UI turn
-   and closes the mic. Say “stop listening” during a listening turn to end it.
-3. Each question includes one fresh camera snapshot when camera sharing is on,
-   plus the selected object thread and up to six previous exchanges. This is
-   snapshot-based visual conversation, not continuous video reasoning. Missing
-   or stale frames produce an explicit error. Uncheck camera sharing for text-only chat.
-4. The microphone stays closed while the assistant is speaking, then waits
-   briefly before listening again. Press Stop to interrupt playback; automatic
-   spoken barge-in during playback is not implemented. No speech for ten seconds
-   pauses hands-free mode. A turn is capped at 25 seconds.
-5. Center one object and say “take a note: this poster is of my friend.” The app
-   saves the actual dictated content, confirms only after the database commit,
-   and shows it when that object is recognized again. “Take a note” alone asks
-   what to remember. Use **Saved objects & memories** even when it is off-camera.
-   Say “Rename this to Dinnie poster” to change the visible saved object’s name.
-   **Open thread** opens all of that object’s notes and replies.
+### 2. Start Ollama
 
+If its app/service is not already running, start it in a separate terminal:
 
-Spoken requests are interpreted by a local LLM using a strict JSON schema before
-any action runs. `APP_LLM_PARSER_ENABLED=true` is the default. The parser sees the
-current transcript, recent conversation, pending questions, and saved object names;
-it receives no camera image. It separates action, noun-phrase name, target object,
-comment spans, and comment selection. Write arguments must match the source speech
-or a held draft. Ambiguous/invalid output and provider failure ask for clarification
-without a write. There is no automatic fallback to regex actions in LLM mode.
-The existing transaction, fresh-camera identity, author, retry, and undo checks
-still execute every action. Transcription remains Faster Whisper; the LLM interprets
-its transcript and cannot guarantee recovery of words that were misheard.
+```sh
+ollama serve
+```
 
-Run the optional real-model phrase checks without changing notes:
-`uv run python -m scripts.evaluate_intent_parser --model qwen3.5:4b`.
-Set `APP_LLM_PARSER_ENABLED=false` only to explicitly use the older rule-based path.
+Download the configured model once:
 
-Object clarification and comment dictation are separate states. “Do you see this
-fridge? It’s in my frame” is conversation even when a comment prompt is pending.
-Naming alone creates/renames the object without adding a comment. Save content
-with “add a comment saying I bought it yesterday”; only the dictated content is
-stored. Camera/setup chatter and command framing are excluded.
+```sh
+ollama pull qwen3.5:4b
+ollama list
+```
 
-Ask “what other notes were left on this object?” to fetch actual stored notes
-and replies. “Read past comments aloud” reads them with browser speech, even
-when automatic spoken answers are off. “Change my last comment to say …” edits
-the same post, keeping its replies. If several comments could match, the app
-asks for a number and retains the replacement until the selection is made.
-Edits apply to the current local profile’s comments and are recorded in SQLite.
+Keep Ollama running while using conversation and the default LLM action parser.
+A custom model must report vision support for the current readiness check, even
+if a particular request does not attach a camera image.
 
-Object titles use a locally installed English noun-phrase parser: “blue water
-bottle” remains the title, while “by LinkedIn and say it looks really nice”
-becomes comment text. Command wording such as “can you make a note about this
-jersey right here” yields the title “Jersey”. The pinned spaCy pipeline and model
-are installed by `uv sync`; no speech text is sent to a remote parsing service.
+### 3. Start Spots
 
-Spoken memory commands support names and notes together, such as “Call it blue
-water bottle and add a note saying it looks really nice.” Names survive the
-follow-up when the app asks for note content. A new object with no usable name
-asks for one and holds the note in the current conversation instead of creating
-a numbered placeholder. “Delete that note”, “delete the note saying …”, and
-“delete all notes for [object name]” remove the current profile’s notes from
-recall and threads. Ambiguous deletions list choices. Say “undo” to restore the
-last deletion (including replies). Deletion is stored locally and survives restart.
+```sh
+./scripts/start_local.sh
+```
 
-`GET /api/health` reports camera, transcription and local AI readiness.
-`POST /api/assistant` accepts message, bounded user/assistant history,
-optional object_id, and include_camera. It returns text and camera provenance.
-The local model can misread images and should not be treated as a guaranteed
-object recognizer. Registered object identity still comes from the existing
-feature matcher. Low-texture objects and visually identical copies remain
-recognition limitations. Native Meta display integration, shared 3D anchors,
-Instagram integration and interest recommendations remain future work.
+The launcher installs project dependencies, builds the frontend and starts one
+FastAPI process on `http://127.0.0.1:8000`. It creates `.env` only if missing.
+Startup seeds demo records without resetting existing posts. The first local
+Whisper run may download its model and delay server startup.
 
-## Combined Instagram and live camera interface
+Open [Spots](http://127.0.0.1:8000). It starts in **Phone** view. Choose **Glasses**,
+or open [Glasses view](http://127.0.0.1:8000/#glasses), for the camera and assistant.
 
-The Phone view uses the Instagram-style inbox from `vishal-branch`. Phone displays persistent object notes and comments; “View through glasses” always opens the live Brio camera. The bottom “Ask Meta AI” control opens a compact dark voice-caption overlay and starts hands-free listening with the existing local LLM and Whisper for naming, saving, reading, editing, and deleting memories. The Meta-style branding represents this prototype interface; inference remains local. The backend exclusively owns the Brio camera; the browser displays its MJPEG stream.
+For manual setup instead of the launcher:
 
-The Phone restaurant fixtures use separate `demo-menu-*` objects, enabled by `APP_RESTAURANT_DEMO=true` (default). Set it to false to omit these fixtures on a new database. Demo group conversations are illustrative browser-session fixtures; real Instagram messaging and autonomous group creation are not connected. Existing object data is retained. Build with `cd frontend && npm ci && npm run build`, then start the backend as described above.
+```sh
+uv sync --locked
+npm --prefix frontend ci --include=dev
+npm --prefix frontend run build
+uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --env-file .env
+```
 
-Glasses has only Phone/Glasses navigation and the bottom voice control. It never falls back to a static image. Once microphone permission is granted, pause after speaking to finish a turn: local Whisper transcribes the completed utterance, the local LLM answers, and system speech synthesis speaks the answer before listening again. Captions are available after each utterance, rather than streaming word by word. Close or Stop ends microphone capture. A pending permission request times out with instructions to allow access and retry.
+The reference artwork and fixture images are already checked in. Regenerate them
+with `uv run python scripts/generate_references.py` only when you intend to update
+those generated assets. A manual seed is optional because startup seeds the app.
 
-Explicit start commands such as “I want to add a new comment to this new object” use a keyword path before the LLM. No comment is saved until content is supplied. A steady central camera view held for about three seconds can provide a tentative visual name; Spots asks you to confirm it before collecting the comment. Small head movement is tolerated, changed scenes and disconnected frames are rejected, and attention samples stay in memory for at most four seconds. A spoken saved-object name resolves multiple fresh recognition matches.
+## Phone, Glasses and voice interaction
 
-Live object overlays follow visual features using forward/backward-checked optical flow and RANSAC motion estimation. Two independent high-confidence identity sightings are required before flow can bridge a missed recognition, and bridges expire after 0.7 seconds without identity verification. Lost features or a changed scene remove the marker rather than holding its old screen coordinates. Motion predictions never enroll identities or train reference images. The live note card follows the same object coordinates; static demo layout rules no longer pin it to a corner. Textureless surfaces, heavy occlusion, or incorrect initial identity matches can still require reacquisition.
+**Phone** shows an Instagram-style inbox, object-note conversations and sample
+social activity. Object posts and comments use the backend; illustrative friend
+and group chats are frontend/session fixtures. There are no real Instagram
+accounts, DMs, contact imports or autonomous group invitations.
+
+**Glasses** displays the backend camera stream and recognized-object notes. The
+current app mounts this view in live mode; it does not automatically substitute
+the static restaurant image when a camera disconnects. The backend supports a
+fixture source for testing, but fixture output is not a live-camera demonstration.
+
+The bottom **Ask Meta AI** control opens the local assistant overlay and starts
+hands-free capture when the services are ready. Allow the microphone, speak, and
+pause to end a turn. Whisper transcribes the completed recording; the app routes
+an action or asks Qwen for a response; the selected speech provider reads the answer aloud (browser on main; Kokoro Heart when ready on the voice branch).
+Close or Stop ends capture/playback. “Stop listening” works during a listening
+turn. Automatic spoken interruption while the assistant is speaking is not built.
+
+The microphone is closed during playback, then waits 650 ms before reopening.
+The current voice detector ends a turn after about 1.2 seconds of silence, pauses
+hands-free after ten seconds with no detected speech, and caps a turn at 25 seconds.
+Transcripts and responses arrive by turn, not word-by-word streaming.
+
+Examples to rehearse against the current build:
+
+| Request | Intended behavior |
+| --- | --- |
+| “Take a note” | Ask which object/content is needed before saving. |
+| “Call it blue water bottle and add a note saying I bought it yesterday” | Resolve or enroll the target and save the dictated comment through the action handler. |
+| “What other notes were left on this object?” | Retrieve stored notes and replies. |
+| “Read past comments aloud” | Read stored comments, rather than inventing a summary of nonexistent notes. |
+| “Change my last comment to say …” | Edit the current profile's matching comment; clarify when ambiguous. |
+| “Delete that note” / “Undo” | Delete a resolved note or restore the tracked deletion. |
+| “Rename this to Dinnie poster” | Rename the visible saved object after identity checks. |
+
+A bare comment request gets an explicit prompt. A steady view can provide a
+tentative object name, which the app asks the user to confirm. Naming, dictation
+and ordinary questions are separate states. Pending content can be held while
+the app asks for a name or selection. The parser checks action arguments against
+speech or an existing draft before executing supported actions.
+
+The two publishing paths differ: typed/recorded composer flows offer transcript
+review and an explicit Post action; an explicit assistant command containing the
+note content can save directly after its validation succeeds. Do not claim every
+voice save requires a second “post it” command. Confirmations reflect actual
+application/database results, not a free-form model claim.
+
+Profiles are demo identities, not secure accounts. Author checks operate on the
+selected local profile and are not production authentication or authorization.
+
+## How the pieces fit together
+
+```text
+Camera -> OpenCV capture -> SIFT/ORB identity matching -> temporary motion tracking
+                             |                                  |
+                             +-> recognition JSON -> React overlays
+Camera -> latest JPEG -> MJPEG stream -> Glasses view
+
+Browser microphone -> MediaRecorder -> /api/transcriptions
+                                       -> Faster Whisper / OpenAI / disabled
+Transcript -> structured local intent parser -> validated application action
+           -> local Qwen conversation with optional camera snapshot and thread
+Response text -> speech playback -> computer sound output
+                 main: browser voice
+                 voice branch: local Kokoro Heart WAV when ready, browser otherwise
+
+React <-> FastAPI <-> repositories/transactions <-> SQLite notes and object IDs
+```
+
+The backend owns one camera capture. Run one backend worker for the demo. Qwen
+receives a fresh snapshot for a camera-enabled conversational turn, not continuous
+video. The intent parser sees transcript/history/pending state and saved object
+names, not the camera image. spaCy helps extract noun phrases for object names.
+SIFT/ORB determines enrolled identity; a model's visual description is not itself
+a trusted saved-object ID.
+
+The matcher uses reference views, confidence thresholds and runner-up margins.
+High-confidence detections can drive live overlays; the main live UI filters out
+non-high detections. Lower-confidence confirmation is supported by the API and
+older thread controls, not a promise that every confirmation control is exposed
+in the current Glasses screen.
+
+Optical flow can bridge a brief missed identity check after two high-confidence
+sightings. Bridges expire after 0.7 seconds without verification. Flow positions
+an overlay; it is not persistent 3D mapping or independent object re-identification.
+Automatic reference banking is bounded but can reinforce a bad initial match.
+
+SQLite stores profiles, objects, reference fingerprints, posts/replies, edit history
+and deletion/undo records. Posts are 1–500 characters. Replies must belong to the
+same object as their top-level parent. Request IDs protect supported retries from
+duplicate writes. References and notes must both be retained for later recognition;
+losing a live detection does not delete the stored conversation.
+
+## Kokoro Heart: implemented on the voice branch
+
+Kokoro turns the assistant's response text into speech locally. It does not replace
+Qwen, Whisper, object matching or note actions. Assistant replies and saved-note
+read-aloud share the selected voice. The backend loads and warms one model in a
+background thread, then renders 24 kHz WAV audio. The frontend splits long text into
+chunks of at most 600 characters and plays them sequentially; this is chunked
+playback, not streaming LLM tokens or continuous speech-to-speech.
+
+Implementation:
+[backend speech provider](https://github.com/arnavvalvekar/meta-glasses-notes/blob/seamless-voice-notes/backend/app/speech.py),
+[shared playback](https://github.com/arnavvalvekar/meta-glasses-notes/blob/seamless-voice-notes/frontend/src/speech.ts),
+[optional dependencies](https://github.com/arnavvalvekar/meta-glasses-notes/blob/seamless-voice-notes/pyproject.toml).
+
+To try it in a separate checkout before the merge:
+
+```sh
+git clone --branch seamless-voice-notes --single-branch https://github.com/arnavvalvekar/meta-glasses-notes.git spots-voice
+cd spots-voice
+cp -n .env.example .env
+```
+
+Configure the local transcription and Ollama values from Quick start, plus:
+
+```dotenv
+APP_SPEECH_PROVIDER=kokoro
+APP_SPEECH_VOICE=af_heart
+```
+
+On macOS, install the phonemizer dependency and voice extra:
+
+```sh
+brew install espeak-ng
+uv sync --locked --extra voice
+```
+
+Then use that branch's `./scripts/start_local.sh`. Its launcher installs the voice
+extra and starts the app with it enabled. A manual server command must also retain
+that extra:
+
+```sh
+npm --prefix frontend ci --include=dev
+npm --prefix frontend run build
+uv run --extra voice uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --env-file .env
+```
+
+The branch also adds `APP_CAMERA_NAME=Brio 100` for macOS camera selection. Set it
+to the camera you actually have; it is not a main setting yet. The implementation
+does not fall back to the built-in camera when the named external camera is missing.
+
+`GET /api/health` adds `speech_provider`, `speech_status`, `speech_voice` and
+`speech_message`. The UI uses Kokoro once the provider reports `ready`; during
+loading/unavailability it can use browser speech. A request failure after server
+speech was selected is reported as an error. Choose `APP_SPEECH_PROVIDER=browser`
+and restart to deliberately use the system voice.
+
+`POST /api/speech` accepts `{"text":"Hello"}` and returns `audio/wav` with
+`Cache-Control: no-store`. Empty/oversized input is rejected; the server limit is
+600 characters per request. It renders text only and does not perform actions.
+Stop cancels browser playback and pending fetches and invalidates late results;
+it does not guarantee cancellation of CPU inference already in progress.
+
+The branch searches `/opt/homebrew/opt/espeak-ng` and `/usr/local/opt/espeak-ng`.
+For a different installation, configure both `APP_ESPEAK_LIBRARY` and
+`APP_ESPEAK_DATA` using the actual library and `espeak-ng-data` paths. The current
+helper targets those macOS/Homebrew locations; don't assume Linux/Windows setup
+is already handled. Download/cache the model and voice before offline use and
+rehearse with recognition, Whisper and Ollama running together.
+
+Kokoro source and weights are described in the official
+[source repository](https://github.com/hexgrad/kokoro) and
+[model card](https://huggingface.co/hexgrad/Kokoro-82M). Keep model/dependency license
+notices when redistributing. Local generation avoids a hosted speech API quota;
+it still consumes the demo computer's resources.
+
+## Configuration and camera-free testing
+
+[.env.example](.env.example) lists all environment variables;
+[config.py](backend/app/config.py) defines runtime defaults. Relative data paths
+are resolved from the repository root. Some package names, IDs and the default
+`data/locus.db` filename retain the earlier Locus name for compatibility.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `APP_DATABASE_PATH` | `./data/locus.db` | Keep this file for persistent notes. |
+| `APP_ENROLLED_DIR` | `./data/enrolled` | Keep saved reference images too. |
+| `APP_CAMERA_SOURCE` | `camera` | `camera`, `fixture` or `disabled`. |
+| `APP_CAMERA_INDEX` | `0` | Check after connecting/changing cameras. |
+| `APP_CAMERA_FIXTURE` | `./markers/markerless-fixture.png` | Backend test input containing enrolled references. |
+| `APP_RECOGNIZER` | `instance` | `aruco` remains a legacy test path. |
+| `APP_TRANSCRIPTION_PROVIDER` | `disabled` | `faster-whisper`, `openai` or `disabled`. |
+| `APP_WHISPER_MODEL` | `medium` | CPU/int8 defaults; `small.en` is a local English alternative. |
+| `APP_ASSISTANT_MODEL` | `qwen3.5:4b` | Must be installed in Ollama. |
+| `APP_OLLAMA_URL` | `http://127.0.0.1:11434` | Trusted backend setting; loopback keeps requests local. |
+| `APP_LLM_PARSER_ENABLED` | `true` | Structured action parsing; `false` selects the older rule-based path. |
+| `APP_RESTAURANT_DEMO` | `true` | Seeds separate `demo-menu-*` objects; disabling it does not remove existing data. |
+
+The optional `openai` transcription adapter uses backend-only `OPENAI_API_KEY`,
+`OPENAI_TRANSCRIPTION_MODEL` (currently configured as `gpt-transcribe`) and
+`OPENAI_TRANSCRIPTION_PROMPT`. Check provider/model availability for your account;
+no cloud call is needed for the local Whisper/Ollama path.
+
+Recognition/performance defaults are 1280×720 camera capture, analysis width 960,
+8 recognition FPS, 15 stream FPS, JPEG quality 75 and three OpenCV threads. These
+are configured targets, not guaranteed hardware throughput. Active references
+are bounded by `APP_MAX_REFERENCE_FILES_PER_IDENTITY=4` and automatic views by
+`APP_MAX_AUTO_BANKED_FILES_PER_IDENTITY=2`.
+
+Without a camera, use `APP_CAMERA_SOURCE=fixture` for recognition/API tests, or
+`disabled` for non-camera work. Check `/api/health` for the source; do not present
+fixture output as live footage. A camera-free assistant request must explicitly
+use `include_camera: false`:
+
+```sh
+curl http://127.0.0.1:8000/api/assistant \
+  -H 'Content-Type: application/json' \
+  --data '{"message":"Can we chat without a camera?","include_camera":false,"history":[]}'
+```
+
+The current main UI opens the compact glasses overlay with camera sharing enabled;
+a dedicated camera-free preview page is a separate local experiment, not a main
+feature. Switching off the backend camera alone does not turn that UI into a
+camera-free conversational client. Backend-only text chat still requires Ollama;
+voice also needs transcription and browser playback.
+
+## Development and verification
+
+For frontend hot reload, run FastAPI on port 8000 and Vite separately:
+
+```sh
+uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --env-file .env
+```
+
+In another terminal:
+
+```sh
+npm --prefix frontend run dev
+```
+
+Vite serves on port 5173 and proxies `/api` to FastAPI. For a single-origin demo,
+use the production build and launcher instead.
+
+```sh
+# Automated checks; no real camera or paid transcription account required
+uv run pytest -m 'not performance'
+npm --prefix frontend test
+npm --prefix frontend run build
+
+# Optional machine-dependent fixture benchmark
+uv run pytest -m performance
+
+# Optional real-model parsing checks (Ollama/model required)
+uv run python -m scripts.evaluate_intent_parser --model qwen3.5:4b
+```
+
+The suites cover recognition fixtures, enrollment, optical flow, persistence,
+action parsing, editing/deletion, microphone state and frontend integration.
+Automated tests do not prove physical-camera accuracy, microphone quality or
+successful native Meta hardware integration. Rehearse those separately.
+
+For background leakage, follow the reproduction command in the
+[object identity document](docs/architecture/object-identity.md). The
+[performance scripts](scripts/benchmark_performance.py) measure local behavior;
+reference pruning defaults to a report and only mutates data with `--apply`.
+
+Startup preserves saved posts. This command deletes current posts, objects, profiles
+and recognition records before reseeding the demo; back up your database and
+reference images before using it:
+
+```sh
+uv run python -m backend.app.seed --reset
+```
+
+CLI helpers read their process environment; they do not automatically load `.env`
+the way the server's `--env-file` does. Supply any custom `APP_DATABASE_PATH` or
+other overrides to the command so it targets the intended database.
+
+## API reference
+
+The running server exposes schemas and request details at
+[Swagger UI](http://127.0.0.1:8000/docs). Key endpoints:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/api/health` | Camera, transcription, assistant readiness and parser mode. |
+| POST | `/api/assistant` | Conversation or supported note action with bounded history/pending state. |
+| GET | `/api/profiles` | Seeded local demo identities. |
+| GET | `/api/objects` | Saved objects, including enabled restaurant examples. |
+| GET | `/api/objects/by-identity/{identity_key}` | Resolve an enrolled identity. |
+| GET | `/api/objects/{object_id}/posts` | Read a thread and its replies. |
+| POST | `/api/objects/{object_id}/posts` | Create a validated post/reply with a client request ID. |
+| POST | `/api/transcriptions` | Transcribe a completed recording. |
+| GET | `/api/recognition` | Current detection metadata and camera provenance. |
+| GET | `/api/camera/stream` | Shared MJPEG stream. |
+| GET | `/api/objects/{object_id}/reference` | Serve an allowed saved reference image. |
+| POST | `/api/objects/enroll` | Photo-upload enrollment for development/testing. |
+| POST | `/api/objects/enroll-live/scan` | Stage a live scan without creating an object. |
+| POST | `/api/objects/enroll-live/scans/{scan_id}/more` | Capture another angle for a pending scan. |
+| DELETE | `/api/objects/enroll-live/scans/{scan_id}` | Discard a pending scan. |
+| POST | `/api/objects/enroll-live` | Create an object from a reviewed scan. |
+| POST | `/api/objects/{object_id}/add-views` | Add live reference views to an existing identity. |
+| POST | `/api/recognition/confirm` | Confirm a provisional sighting. |
+| DELETE | `/api/objects/{object_id}` | Discard an eligible enrollment, not a posted/seeded object. |
+| GET | `/api/diagnostics/performance` | Runtime performance diagnostics. |
+
+The Kokoro voice branch additionally exposes `POST /api/speech`; it is not an
+endpoint on main before the merge.
+
+Direct post bodies require `author_id`, `body` and a unique `client_request_id`;
+replies also supply `parent_post_id`. Follow the schema for assistant action state
+rather than constructing a new pending-state protocol.
+
+## Three-minute demo checklist
+
+1. Start Ollama and the backend, allow camera/microphone access, verify health and
+   sound, and rehearse against the actual reference object.
+2. Open two browser sessions using the same backend and different demo profiles.
+3. Explain that Phone is a mock display and Glasses uses the actual camera feed.
+4. Find a saved invitation or note, then have someone create a real spoken reply
+   using the implemented controls. Check the target and the actual saved text.
+5. Show the second person retrieving that saved note. Keep the same database and
+   reference files between panels; do not reset the demo to prove rediscovery.
+6. If recognition or transcription fails, say what failed and use the supported
+   typed path in Phone or a prepared recording of an earlier run labeled as such.
+   Do not substitute sample notes for a claimed live save.
+
+Before judging, also test moving/removing the target while leaving its background,
+looking away during dictation, cancelling, retrying, and restarting with the same
+saved conversation. Reliable object-only recognition is still a work item.
+
+## What we want to build next
+
+First, bring the experience onto **Meta Ray-Ban Display** so discovery and replies
+can happen through the glasses without reaching for a phone. Native hardware
+integration is not implemented by this browser prototype.
+
+Then test with people in shared places, improve recognition across backgrounds
+and viewpoints, and see whether notes lead to conversations or plans. Future
+opt-in recommendations could use shared interests and places people choose to
+share. App integrations, including an example such as Beli restaurant
+recommendations, are ideas to investigate, not existing partnerships or APIs in use.
+
+Real Instagram integration, a live social recommender, shared 3D anchors and
+native in-lens rendering are not on main. The Kokoro integration already exists
+on the voice branch and is awaiting its merge; see that section for setup rather
+than treating it as future research.
+
+## Code map
+
+- `backend/app/camera.py`, `recognition.py`, `object_tracking.py`: capture, matching and tracking.
+- `backend/app/assistant.py`, `intent_parser.py`, `intent_dispatch.py`: conversation and action interpretation.
+- `backend/app/memories.py`, `note_actions.py`, `comment_actions.py`, `note_deletion.py`: note actions and pending states.
+- `backend/app/database.py`, `repositories.py`: persistence, history and seed behavior.
+- `backend/app/transcription.py`, `noun_phrases.py`: transcription and object naming.
+- `frontend/src/App.tsx`, `components/MessagesView.tsx`: Phone/Glasses navigation and mock social interface.
+- `frontend/src/components/CameraStage.tsx`, `GlassesNote.tsx`: camera overlays and note interaction.
+- `frontend/src/components/AssistantPanel.tsx`, `speech.ts`, `hooks/useVoiceRecorder.ts`: assistant turns, system speech and microphone lifecycle.
+- `backend/tests/`, `frontend/src/**/*.test.*`: automated checks.
+
+This is a local hackathon prototype with simulated identities, not a deployed
+multi-user service. Keep private recordings, credentials and local databases out
+of commits.
