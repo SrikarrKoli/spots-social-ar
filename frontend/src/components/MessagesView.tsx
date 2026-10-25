@@ -18,6 +18,7 @@ import { flattenPosts, latestPost, noteCount, participants } from "../threadUtil
 import type { ObjectSummary, Post, Profile, ThreadResponse } from "../types";
 import { Avatar, SpotsAvatar } from "./Avatar";
 import { Icon } from "./Icons";
+import { MUSE, MuseAvatar, MuseChat, musePreview, type MuseHighlight } from "./MuseChat";
 
 interface Props {
   profile: Profile | null;
@@ -40,39 +41,69 @@ interface ChatEntry {
   root: Post;
 }
 
+const firstName = (person: Profile) => person.display_name.split(" ")[0];
+
+// Who a reply answers: the note's author, or, when the author answers in their own
+// thread, the last other person who replied there before them.
+function replyTarget(reply: Post, root: Post): Profile | null {
+  if (root.author.id !== reply.author.id) return root.author;
+  return root.replies
+    .filter((item) => item.created_at < reply.created_at && item.author.id !== reply.author.id)
+    .at(-1)?.author ?? null;
+}
+
+// "Vishal replied to you", "You replied to Aneesh", told from the viewer's side.
+export function replyLabel(reply: Post, root: Post, viewer: Profile | null) {
+  const mine = reply.author.id === viewer?.id;
+  const replier = mine ? "You" : firstName(reply.author);
+  const target = replyTarget(reply, root);
+  if (!target) return `${replier} added to ${mine ? "your" : "their"} note`;
+  return `${replier} replied to ${target.id === viewer?.id ? "you" : firstName(target)}`;
+}
+
 function ChatLog({
   entries,
   viewer,
   showObject,
-  showReplyContext = false,
+  newIds,
   after,
 }: {
   entries: ChatEntry[];
   viewer: Profile | null;
   showObject: boolean;
-  showReplyContext?: boolean;
+  // Messages that just arrived, briefly highlighted as they land.
+  newIds: Set<number>;
   after?: string;
 }) {
   return (
     <>
       {entries.map(({ post, object, root }, index) => {
-        const previous = entries[index - 1]?.post;
+        const previousEntry = entries[index - 1];
+        const previous = previousEntry?.post;
         const mine = post.author.id === viewer?.id;
         const previousTime = previous?.created_at ?? after;
         const showTime = !previousTime || new Date(post.created_at).getTime() - new Date(previousTime).getTime() > 5 * 60_000;
-        const showName = !mine && (showTime || previous?.author.id !== post.author.id);
+        const isReply = post.parent_post_id !== null;
+        // A run of replies to the same note quotes it once, like a DM reply thread.
+        const continuesThread = isReply && previous?.parent_post_id !== null && previousEntry?.root.id === root.id && previous?.author.id === post.author.id && !showTime;
+        const showName = !mine && !isReply && (showTime || previous?.author.id !== post.author.id);
         const nextSameAuthor = entries[index + 1]?.post.author.id === post.author.id;
         return (
           <div key={post.id}>
             {showTime && <div className="chat-time">{dayAndTime(post.created_at)}</div>}
-            <div className={`chat-row ${mine ? "chat-row--mine" : ""}`}>
+            <div className={`chat-row ${mine ? "chat-row--mine" : ""} ${newIds.has(post.id) ? "is-new" : ""}`}>
               {!mine && (nextSameAuthor ? <span className="chat-avatar-spacer" /> : <Avatar profile={post.author} size="sm" />)}
               <div className="chat-bubble-wrap">
                 {showName && <span className="chat-sender">{post.author.display_name}</span>}
-                {showReplyContext && post.parent_post_id !== null && (
-                  <span className="chat-reply-context">
-                    {mine ? "You" : post.author.display_name} replied to {root.author.display_name.split(" ")[0]}
-                  </span>
+                {isReply && !continuesThread && (
+                  <div className="chat-reply">
+                    <span className="chat-reply__label">
+                      <Icon name="reply" />
+                      {replyLabel(post, root, viewer)}
+                      {showObject && <> · {object.title}</>}
+                    </span>
+                    <p className="chat-reply__quote">{root.body}</p>
+                  </div>
                 )}
                 <p className="chat-bubble" title={clockTime(post.created_at)}>{post.body}</p>
                 {showObject && post.parent_post_id === null && <span className="chat-context">Note on {object.title}</span>}
@@ -232,14 +263,20 @@ export function MessagesView({
   const recorder = useTranscribedRecorder();
   const inputRef = useRef<HTMLInputElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  // Posts already on screen; anything new that arrives is announced and highlighted.
+  const knownPosts = useRef<Set<number> | null>(null);
+  const [newIds, setNewIds] = useState<Set<number>>(new Set());
+  const [banner, setBanner] = useState<ChatEntry | null>(null);
+  const [unreadFrom, setUnreadFrom] = useState<Set<string>>(new Set());
 
   const allPosts = useMemo(
     () => objects.flatMap((object) => (threads[object.id]?.posts ?? []).map((post) => ({ post, object }))),
     [objects, threads],
   );
 
+  // Story bubbles show a person's latest note, not their replies.
   const latestBy = (personId: string) =>
-    latestPost(flattenPosts(allPosts.map(({ post }) => post)).filter((post) => post.author.id === personId));
+    latestPost(allPosts.map(({ post }) => post).filter((post) => post.author.id === personId));
 
   const people = useMemo(() => {
     const known = new Map(profiles.map((person) => [person.id, person]));
@@ -278,30 +315,84 @@ export function MessagesView({
       }))
     : [];
   const dish = nearbyObject?.title ?? "menu";
-  const spotsPreview = nearbyPeople.length === 0
+  const nearbyRoot = nearbyLatest?.parent_post_id != null ? nearbyThread?.posts.find((post) => post.id === nearbyLatest.parent_post_id) : undefined;
+  const spotsPreview = nearbyLatest && nearbyRoot
+    ? `${replyLabel(nearbyLatest, nearbyRoot, profile)}: “${nearbyLatest.body}”`
+    : nearbyPeople.length === 0
     ? "Sent a post"
     : nearbyPeople.length === 1
       ? `${nearbyPeople[0].display_name.split(" ")[0]} left a note on the ${dish}`
       : `${nearbyPeople.length} people left notes on the ${dish}`;
 
+  const museHighlight: MuseHighlight | null = allPosts
+    .filter(({ post }) => post.author.id !== profile?.id)
+    .sort((a, b) => a.post.created_at.localeCompare(b.post.created_at))
+    .map(({ post, object }) => ({ note: post, object }))
+    .at(-1) ?? null;
+  const [seenMuse, setSeenMuse] = useState(false);
+
   const activePerson = people.find((person) => person.id === activeId) ?? null;
   const activeDemo = DEMO_CONVERSATIONS.find((conversation) => DEMO_PREFIX + conversation.id === activeId) ?? null;
   const demoMessages = (conversation: DemoConversation) => [...conversation.messages, ...(demoSent[conversation.id] ?? [])];
-  const entries = activeId === SPOTS ? spotsEntries : activeDemo ? [] : entriesFor(activeId);
+  const entries = activeId === SPOTS ? spotsEntries : activeDemo || activeId === MUSE ? [] : entriesFor(activeId);
   const activeFriendChat = activePerson && !profiles.some(person => person.id === activePerson.id) && entries.length === 0 ? friendChat(activePerson) : null;
   const shownDemo = activeDemo ?? activeFriendChat;
   const cardTime = nearbyLatest?.created_at;
   const updatesAfter = (nearbyObject?.identity_kind === "demo" ? DEMO_SPOTS_AFTER : []).filter((update) => !cardTime || minutesAgo(update.minutesAgo) > cardTime);
   const latestUpdate = updatesAfter.at(-1);
-  const logLength = shownDemo ? demoMessages(shownDemo).length : entries.length;
+  const logLength = activeId === MUSE ? (demoSent[MUSE]?.length ?? 0) : shownDemo ? demoMessages(shownDemo).length : entries.length;
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
   }, [activeId, logLength, cardNote?.id]);
 
   useEffect(() => {
+    const everything = allPosts.flatMap(({ post, object }) => [post, ...post.replies].map((item) => ({ post: item, object, root: post })));
+    if (everything.length === 0) return;
+    if (knownPosts.current === null) {
+      knownPosts.current = new Set(everything.map((entry) => entry.post.id));
+      return;
+    }
+    const known = knownPosts.current;
+    const fresh = everything.filter((entry) => !known.has(entry.post.id));
+    if (fresh.length === 0) return;
+    fresh.forEach((entry) => known.add(entry.post.id));
+    setNewIds((ids) => new Set([...ids, ...fresh.map((entry) => entry.post.id)]));
+    const reply = fresh
+      .filter((entry) => entry.post.parent_post_id !== null && entry.post.author.id !== profile?.id)
+      .sort((a, b) => a.post.created_at.localeCompare(b.post.created_at))
+      .at(-1);
+    if (!reply) return;
+    const alreadyOpen = activeId === reply.post.author.id || (activeId === SPOTS && reply.object.id === nearbyObject?.id);
+    if (!alreadyOpen) {
+      setBanner(reply);
+      setUnreadFrom((people) => new Set(people).add(reply.post.author.id));
+    }
+  }, [allPosts]);
+
+  useEffect(() => {
+    if (!banner) return;
+    const timer = window.setTimeout(() => setBanner(null), 7000);
+    return () => window.clearTimeout(timer);
+  }, [banner]);
+
+  useEffect(() => {
+    if (newIds.size === 0) return;
+    const timer = window.setTimeout(() => setNewIds(new Set()), 4000);
+    return () => window.clearTimeout(timer);
+  }, [newIds]);
+
+  useEffect(() => {
     if (activeId === SPOTS) setSeenSpots(true);
+    if (activeId === MUSE) setSeenMuse(true);
     if (activeId.startsWith(DEMO_PREFIX)) setSeenDemo((seen) => new Set(seen).add(activeId));
+    setUnreadFrom((people) => {
+      if (!people.has(activeId)) return people;
+      const next = new Set(people);
+      next.delete(activeId);
+      return next;
+    });
+    if (banner && (banner.post.author.id === activeId || (activeId === SPOTS && banner.object.id === nearbyObject?.id))) setBanner(null);
     setDraft("");
     setFromVoice(false);
     setSendError(null);
@@ -313,6 +404,12 @@ export function MessagesView({
     event?.preventDefault();
     const body = draft.trim();
     if (!body || !profile) return;
+    if (activeId === MUSE) {
+      setDemoSent((sent) => ({ ...sent, [MUSE]: [...(sent[MUSE] ?? []), { from: "me", body, minutesAgo: 0 }] }));
+      setDraft("");
+      setFromVoice(false);
+      return;
+    }
     if (shownDemo) {
       setDemoSent((sent) => ({ ...sent, [shownDemo.id]: [...(sent[shownDemo.id] ?? []), { from: "me", body, minutesAgo: 0 }] }));
       setDraft("");
@@ -424,21 +521,40 @@ export function MessagesView({
               {!seenSpots && <i className="unread-indicator" />}
             </button>
           )}
+          {matches("Muse") && (
+            <button className={`conversation ${activeId === MUSE ? "is-active" : ""}`} onClick={() => setActiveId(MUSE)}>
+              <MuseAvatar size="lg" />
+              <span className="conversation__text">
+                <strong>Muse</strong>
+                <small className={seenMuse ? "" : "is-unread"}>{musePreview(museHighlight)}</small>
+              </span>
+              {!seenMuse && <i className="unread-indicator" />}
+            </button>
+          )}
           {people.filter((person) => matches(person.display_name)).map((person) => {
             const last = entriesFor(person.id).at(-1);
             const mine = last?.post.author.id === profile?.id;
             const demoLast = last ? null : demoMessages(friendChat(person)).at(-1);
+            const unread = unreadFrom.has(person.id);
+            // In their own row, drop the person's name: "Replied to you: …", "You replied to Theo: …".
+            const label = last && last.post.parent_post_id !== null ? replyLabel(last.post, last.root, profile) : "";
+            const lastPrefix = !last ? "" : label
+              ? mine
+                ? `${label.endsWith(` to ${firstName(person)}`) ? "You replied" : label}: `
+                : `${label.slice(label.indexOf(" ") + 1).replace(/^\w/, (letter) => letter.toUpperCase())}: `
+              : mine ? "You: " : "";
             return (
               <button key={person.id} className={`conversation ${activeId === person.id ? "is-active" : ""}`} onClick={() => setActiveId(person.id)}>
                 <Avatar profile={person} size="lg" />
                 <span className="conversation__text">
                   <strong>{person.display_name}</strong>
-                  <small>
+                  <small className={unread ? "is-unread" : ""}>
                     {last
-                      ? <>{mine ? "You: " : ""}{last.post.body} · {relativeTime(last.post.created_at)}</>
+                      ? <>{lastPrefix}{last.post.body} · {relativeTime(last.post.created_at)}</>
                       : demoLast && <>{demoLast.from === "me" ? "You: " : ""}{demoLast.body} · {relativeTime(minutesAgo(demoLast.minutesAgo))}</>}
                   </small>
                 </span>
+                {unread && <i className="unread-indicator" />}
               </button>
             );
           })}
@@ -464,17 +580,36 @@ export function MessagesView({
       </aside>
 
       <section className="chat">
+        {banner && (
+          <button
+            className="reply-banner"
+            role="status"
+            onClick={() => { setActiveId(banner.post.author.id); setBanner(null); }}
+            aria-label={`${replyLabel(banner.post, banner.root, profile)}: ${banner.post.body}. Open conversation`}
+          >
+            <Avatar profile={banner.post.author} size="md" />
+            <span className="reply-banner__text">
+              <strong>{firstName(banner.post.author)} replied to {banner.root.author.id === profile?.id ? "your note" : `${firstName(banner.root.author)}'s note`}</strong>
+              <span className="reply-banner__body">{banner.post.body}</span>
+              <span className="reply-banner__original">“{banner.root.body}”</span>
+              <small>on {banner.object.title} · now</small>
+            </span>
+            <Icon name="reply" className="reply-banner__icon" />
+          </button>
+        )}
         <header className="chat__header">
-          {activeDemo
+          {activeId === MUSE
+            ? <MuseAvatar size="md" />
+            : activeDemo
             ? <ConversationAvatar conversation={activeDemo} size="md" />
             : activePerson ? <Avatar profile={activePerson} size="md" /> : <SpotsAvatar size="md" />}
           <div>
-            <strong>{activeDemo?.title ?? activePerson?.display_name ?? "Spots"}</strong>
-            <small>{activeDemo?.subtitle ?? (activePerson ? "Active today" : "spots")}</small>
+            <strong>{activeId === MUSE ? "Muse" : activeDemo?.title ?? activePerson?.display_name ?? "Spots"}</strong>
+            <small>{activeId === MUSE ? "AI" : activeDemo?.subtitle ?? (activePerson ? "Active today" : "spots")}</small>
           </div>
           <div className="chat__tools">
-            {activeId !== SPOTS && <button className="icon-button" aria-label="Audio call"><Icon name="phone" /></button>}
-            {activeId !== SPOTS && <button className="icon-button" aria-label="Video call"><Icon name="video" /></button>}
+            {activeId !== SPOTS && activeId !== MUSE && <button className="icon-button" aria-label="Audio call"><Icon name="phone" /></button>}
+            {activeId !== SPOTS && activeId !== MUSE && <button className="icon-button" aria-label="Video call"><Icon name="video" /></button>}
             <button className="icon-button" aria-label="Conversation details"><Icon name="info" /></button>
           </div>
         </header>
@@ -510,16 +645,23 @@ export function MessagesView({
           {activeId === SPOTS && <SpotsUpdates updates={updatesAfter} after={cardTime} />}
           {activeId === SPOTS && cardNote && spotsEntries.length > 0 && (
             <div className="chat-thread-label">
-              <span>{spotsEntries.length} {spotsEntries.length === 1 ? "comment" : "comments"} to {cardNote.author.display_name.split(" ")[0]}'s object thread</span>
+              <span>{spotsEntries.length === 1 ? "1 reply" : `${spotsEntries.length} replies`} on {cardNote.author.id === profile?.id ? "your" : `${firstName(cardNote.author)}'s`} note</span>
             </div>
           )}
-          {shownDemo
+          {activeId === MUSE
+            ? <MuseChat
+                highlight={museHighlight}
+                sent={(demoSent[MUSE] ?? []).map((message) => message.body)}
+                onSend={(text) => setDemoSent((sent) => ({ ...sent, [MUSE]: [...(sent[MUSE] ?? []), { from: "me", body: text, minutesAgo: 0 }] }))}
+                onOpenLens={onOpenLens}
+              />
+            : shownDemo
             ? <DemoLog conversation={shownDemo} messages={demoMessages(shownDemo)} />
             : <ChatLog
                 entries={entries}
                 viewer={profile}
                 showObject={activeId !== SPOTS}
-                showReplyContext={activeId === SPOTS}
+                newIds={newIds}
                 after={activeId === SPOTS ? nearbyLatest?.created_at : undefined}
               />}
         </div>
@@ -542,7 +684,7 @@ export function MessagesView({
               setDraft(event.target.value);
               if (!event.target.value) setFromVoice(false);
             }}
-            placeholder={recording ? "Listening…" : recorder.state === "transcribing" ? "Transcribing…" : "Message…"}
+            placeholder={recording ? "Listening…" : recorder.state === "transcribing" ? "Transcribing…" : activeId === MUSE ? "Message Muse…" : "Message…"}
             aria-label="Message"
           />
           {draft && (

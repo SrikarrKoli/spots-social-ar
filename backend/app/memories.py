@@ -18,16 +18,23 @@ from .repositories import InvalidReplyError, NotFoundError, Repository
 from .noun_phrases import noun_parts, comment_tail
 
 
+NEGATION = r"\b(?:don't|do not|never|cancel|stop)\b"
+
+
 def is_note_request(message: str, history: list[dict] = ()) -> bool:
     text = message.lower().replace("’", "'").strip()
-    if re.search(r"\b(don't|do not|never|cancel|stop)\b", text):
-        return False
     if re.match(r"^(what|how|why|when|does|do you|can you explain)\b", text):
         return False
-    if re.search(r"\b(take|save|leave|write|jot|make|create|post|add|record|store)\b.{0,100}\b(notes?|comments?|memor(?:y|ies))\b", text):
-        return True
-    if re.search(r"\b(?:remember\s+(this|that)|note that|(?:jot|write|note)\s+down)\b", text):
-        return True
+    command = (
+        re.search(r"\b(take|save|leave|write|jot|make|create|post|add|record|store)\b.{0,100}?\b(notes?|comments?|memor(?:y|ies))\b", text)
+        or re.search(r"\b(?:remember\s+(this|that)|note that|(?:jot|write|note)\s+down)\b", text)
+    )
+    if command:
+        # A negation cancels only the command ("don't take a note"), never the
+        # note's own words ("leave a note saying don't touch this").
+        return not re.search(NEGATION, text[:command.end()])
+    if re.search(NEGATION, text):
+        return False
     return bool(re.search(r"\bsave (it|that|this)\b", text) and any(
         re.search(r"\b(note|notes|remember)\b", item["content"], re.I) for item in history
     ))
@@ -72,6 +79,16 @@ def reply_target(posts, target: str, viewer_id: str):
     return None, ""
 
 
+def spoken_name(title: str) -> str:
+    """An object title as it sounds mid-sentence: "the brown leather chair", "Pravan's mug"."""
+    first = title.split(" ", 1)[0]
+    if first.endswith(("'s", "’s")):
+        return title
+    if not first.isupper():
+        title = title[:1].lower() + title[1:]
+    return f"the {title}"
+
+
 class MemoryService:
     def __init__(self, repository: Repository, camera: CameraService, assistant: LocalAssistant, directory: Path):
         self.repository, self.camera, self.assistant, self.directory = repository, camera, assistant, directory
@@ -80,7 +97,7 @@ class MemoryService:
     def response(self, note, captured_at=None):
         obj = self.repository.object_by_id(note.object_id)
         return AssistantResponse(
-            text=f'Saved to {obj.title}: “{note.body}” I’ll show it when I recognize this object again.',
+            text=f"Got it. I saved that to {spoken_name(obj.title)}, and I'll bring it up next time you see it.",
             model=self.assistant.model, camera_used=captured_at is not None,
             camera_source=self.camera.source, captured_at=captured_at,
             saved_note=note, saved_object=obj,

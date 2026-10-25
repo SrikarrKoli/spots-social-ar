@@ -28,6 +28,14 @@ def test_explicit_note_commands(text):
 
 
 @pytest.mark.parametrize('text', [
+    "Leave a note saying don't touch this", 'Take a note: this is my mug, please do not borrow it.',
+    'Add a comment saying never leave the door open',
+])
+def test_negation_inside_the_note_text_is_still_a_note(text):
+    assert is_note_request(text)
+
+
+@pytest.mark.parametrize('text', [
     'What do you see?', 'How do I take a note?', 'What notes did I save?',
     'Do not save a note', "Don't take a note", 'Explain the note on the book',
 ])
@@ -59,7 +67,7 @@ def test_save_new_object_note_and_recover_after_restart(client, database_path, m
     assert data['saved_note']['body'] == 'This TV has great picture quality.'
     object_id = data['saved_object']['id']
     assert object_id.startswith('memory-')
-    assert 'Saved to TV' in data['text']
+    assert data['text'] == "Got it. I saved that to the TV, and I'll bring it up next time you see it."
     refs = client.app.state.repository.object_reference_paths(object_id)
     assert len(refs) == 1 and Path(refs[0]).exists()
     # No repeated enrollment/extraction, even if the camera is disconnected on retry.

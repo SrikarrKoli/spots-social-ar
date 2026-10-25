@@ -81,7 +81,7 @@ export function GlassesToast({ message, onDone }: { message: string; onDone: () 
   return <div className="g-toast" role="status">{message}</div>;
 }
 
-type Step = "note" | "thread" | "command" | "listening" | "transcribing" | "typing" | "confirm" | "sending";
+type Step = "note" | "command" | "listening" | "transcribing" | "typing" | "confirm" | "sending";
 
 // The selected-note card, with the reply flow: speak (or type) → review → confirm → saved.
 // Nothing is posted until the wearer confirms.
@@ -93,6 +93,7 @@ export function NoteCard({
   onClose,
   onPosted,
   assistantSignal = 0,
+  compact = false,
   onAssistantStateChange,
   onAskAssistant,
 }: {
@@ -103,6 +104,8 @@ export function NoteCard({
   onClose: () => void;
   onPosted: (confirmation: string) => void;
   assistantSignal?: number;
+  // Just the conversation, without actions, while the voice assistant is open.
+  compact?: boolean;
   onAssistantStateChange?: (state: AssistantState) => void;
   onAskAssistant?: (prompt: string) => void;
 }) {
@@ -124,7 +127,25 @@ export function NoteCard({
   const canSpeak = speechSupported();
   const threadReplies = root?.replies ?? [];
   const replyCount = threadReplies.length;
-  const displayedNote = step === "thread" ? root ?? note : note;
+  // The card always shows the conversation: the original note, then its replies.
+  const displayedNote = root ?? note;
+  const threadRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Start at the newest reply.
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+  }, [replyCount, root?.id]);
+  // A reply that arrives while the card is open is highlighted as it lands.
+  const seenReplies = useRef(replyCount);
+  const [arrivedId, setArrivedId] = useState<number | null>(null);
+  useEffect(() => {
+    if (replyCount > seenReplies.current) {
+      setArrivedId(threadReplies.at(-1)?.id ?? null);
+      const timer = window.setTimeout(() => setArrivedId(null), 3000);
+      seenReplies.current = replyCount;
+      return () => window.clearTimeout(timer);
+    }
+    seenReplies.current = replyCount;
+  }, [replyCount]);
 
   const authorContext = (post: Post) => {
     if (post.parent_post_id === null || !root) return post.author.display_name;
@@ -133,7 +154,10 @@ export function NoteCard({
     return `${post.author.display_name} replied to ${firstName(root.author)}`;
   };
 
-  useEffect(() => () => stopSpeaking(), []);
+  // Only speech this card started is ours to stop; the assistant's replies keep playing
+  // even if the card closes because the object briefly left the camera's view.
+  const readingRef = useRef(false);
+  useEffect(() => () => { if (readingRef.current) stopSpeaking(); }, []);
   useEffect(() => {
     if (step === "typing") inputRef.current?.focus();
     else firstActionRef.current?.focus();
@@ -171,15 +195,21 @@ export function NoteCard({
     }
     setError(null);
     setSpeaking(true);
+    readingRef.current = true;
     // Same voice as the assistant: the server's Kokoro voice when ready, else the browser's.
-    void speakText(`${note.author.display_name} says: ${note.body}`)
+    const opening = displayedNote ?? note;
+    const conversation = [
+      `${opening.author.display_name} says: ${opening.body}`,
+      ...threadReplies.map((reply) => `${firstName(reply.author)} replied: ${reply.body}`),
+    ].join(" ");
+    void speakText(conversation)
       .catch((speechError: unknown) => setError(speechError instanceof Error ? speechError.message : "Couldn't read this note aloud."))
-      .finally(() => setSpeaking(false));
+      .finally(() => { readingRef.current = false; setSpeaking(false); });
   };
 
   const startReply = async () => {
     setError(null);
-    stopSpeaking();
+    if (readingRef.current) stopSpeaking();
     setSpeaking(false);
     if (voiceSource === "backend" && (await recorder.start())) {
       setStep("listening");
@@ -272,7 +302,7 @@ export function NoteCard({
 
   return (
     <section
-      className="g-card"
+      className={`g-card ${compact ? "g-card--compact" : ""}`}
       role="dialog"
       aria-label={`${object.title} note`}
       onKeyDown={(event) => {
@@ -315,14 +345,14 @@ export function NoteCard({
           <p className="g-note__text">No notes here yet.</p>
         )}
 
-        {step === "thread" && (
-          <div className="g-thread" aria-label={`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`}>
+        {replyCount > 0 && (
+          <div className="g-thread" ref={threadRef} aria-label={`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`}>
             <div className="g-thread__heading">
               <span>Conversation</span>
               <span>{replyCount} {replyCount === 1 ? "reply" : "replies"}</span>
             </div>
             {threadReplies.map((reply) => (
-              <div className={`g-thread__reply ${reply.author.id === viewer?.id ? "is-mine" : ""}`} key={reply.id}>
+              <div className={`g-thread__reply ${reply.author.id === viewer?.id ? "is-mine" : ""} ${reply.id === arrivedId ? "is-new" : ""}`} key={reply.id}>
                 <Avatar profile={reply.author} size="sm" fallback="initials" />
                 <div>
                   <span className="g-thread__author">{authorContext(reply)}</span>
@@ -369,17 +399,12 @@ export function NoteCard({
         {error && <p className="g-error" role="alert">{error}</p>}
       </div>
 
-      <div className="g-actions">
+      {!compact && <div className="g-actions">
         {step === "note" && (
           <>
             {onAskAssistant && <button className="g-action" onClick={() => onAskAssistant(`Read all past comments about ${object.title}`)}><Icon name="notes" /><span>Ask about past notes</span><Icon name="chevronRight" /></button>}
 
-            {replyCount > 0 && (
-              <button ref={firstActionRef} className="g-action" onClick={() => setStep("thread")}>
-                <Icon name="notes" /> <span>View {replyCount} {replyCount === 1 ? "reply" : "replies"}</span> <Icon name="chevronRight" />
-              </button>
-            )}
-            <button ref={replyCount === 0 ? firstActionRef : undefined} className="g-action" onClick={() => void startReply()} disabled={!viewer}>
+            <button ref={firstActionRef} className="g-action" onClick={() => void startReply()} disabled={!viewer}>
               <Icon name="mic" /> <span>{replyingTo ? "Reply by voice" : "Leave a note by voice"}</span> <Icon name="chevronRight" />
             </button>
             {note && (
@@ -388,11 +413,6 @@ export function NoteCard({
               </button>
             )}
           </>
-        )}
-        {step === "thread" && (
-          <button ref={firstActionRef} className="g-action" onClick={() => setStep("note")}>
-            <Icon name="chevronRight" className="g-icon-back" /> <span>Back to recommendation</span>
-          </button>
         )}
         {step === "listening" && (
           <button ref={firstActionRef} className="g-action" onClick={() => void finishListening()}>
@@ -424,9 +444,9 @@ export function NoteCard({
             </button>
           </>
         )}
-      </div>
+      </div>}
 
-      <p className="g-hint">{step === "note" ? "Esc to close" : step === "thread" ? "Esc to go back" : "Esc to cancel"}</p>
+      {!compact && <p className="g-hint">{step === "note" ? "Esc to close" : "Esc to cancel"}</p>}
     </section>
   );
 }

@@ -77,9 +77,11 @@ export function CameraStage({
     return () => observer.disconnect();
   }, []);
 
+  // Only objects that carry notes get a marker and card; a recognised object with
+  // nothing on it must not take over the view from the one that has your note.
   const registered = useMemo(
-    () => recognition?.detections.filter((item) => item.object && item.tier === "high") ?? [],
-    [recognition],
+    () => recognition?.detections.filter((item) => item.object && item.tier === "high" && noteCount(threads[item.object.id]) > 0) ?? [],
+    [recognition, threads],
   );
   const activeDetection = registered.find((item) => item.object?.id === selectedObject?.id) ?? registered[0];
   useEffect(() => {
@@ -185,8 +187,12 @@ export function CameraStage({
       }}
       assistantSignal={assistantSignal}
       onAssistantStateChange={setAssistantState}
+      compact={assistantOpen}
     />
   );
+  // While the wearer talks to the assistant (for example to reply), the note stays on
+  // the object in a compact form so the original note and new replies remain in view.
+  const showCard = mode === "live" ? Boolean(cardObject) && (cardOpen || assistantOpen) : cardOpen && !assistantOpen;
 
   const activateAssistant = () => onAskAssistant(cardObject);
   const displayState = assistantOpen ? assistantPhase : assistantState;
@@ -230,7 +236,7 @@ export function CameraStage({
                 }}
               />
             ))}
-            {cardOpen && !assistantOpen && <div className={`g-card-slot ${mode === "live" ? "g-card-slot--tracked" : ""}`} style={{ ...cardStyle, "--tracked-left": `${cardStyle?.left ?? 16}px`, "--tracked-top": `${cardStyle?.top ?? 64}px` } as CSSProperties}>{card}</div>}
+            {showCard && <div className={`g-card-slot ${mode === "live" ? "g-card-slot--tracked" : ""} ${assistantOpen ? "g-card-slot--compact" : ""}`} style={{ ...cardStyle, "--tracked-left": `${cardStyle?.left ?? 16}px`, "--tracked-top": `${cardStyle?.top ?? 64}px` } as CSSProperties}>{card}</div>}
           </div>
         )}
 
