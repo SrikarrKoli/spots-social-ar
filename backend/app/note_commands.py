@@ -7,7 +7,7 @@ from .noun_phrases import noun_parts, comment_tail
 
 VERBS = r"(?:take|save|leave|write(?: down)?|jot(?: down)?|make|create|post|add|record|store)"
 NOTE = r"(?:notes?|comments?|memor(?:y|ies))"
-COMMAND = rf"(?:\b{VERBS}\s+(?:(?:a|the|this|my|some)\s+)?{NOTE}\b|\bnote that\b)"
+COMMAND = rf"(?:\b{VERBS}\s+(?:(?:a|the|this|my|some|new|another)\s+)*(?:new\s+)?{NOTE}\b|\bnote that\b)"
 
 
 def object_title(text: str) -> str:

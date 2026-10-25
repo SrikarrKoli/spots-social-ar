@@ -40,6 +40,9 @@ When asked to take a note without content, add_comment with no spans asks for co
 If awaiting_note, a plain dictated sentence is add_comment, but questions, thanks,
 setup chatter and asking what notes exist are chat/read_comments. Never save those.
 If awaiting_description, a plain object description is describe_object (not a comment).
+A request to add a NEW comment is add_comment even if no comment content is supplied.
+The word new belongs to the action and is never the object name or comment.
+Pending_title may contain a camera suggestion; only use it after the user confirms it.
 If awaiting_name, extract object_name and add_comment using the held pending_body.
 If pending_edit_ids, handle a number as edit_comment, retaining pending_edit_body.
 If pending_delete_ids, handle a number as delete_comment. Never confuse edit/delete.

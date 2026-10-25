@@ -19,7 +19,7 @@ from .camera import CameraService
 from .assistant import AssistantError, LocalAssistant
 from .intent_parser import IntentParser
 from .intent_dispatch import dispatch_intent
-from .memories import MemoryService, is_note_request
+from .memories import MemoryService, is_note_request, is_bare_comment_request
 from .comment_actions import is_read_request, read_comments, is_edit_request, edit_comment
 from .note_deletion import is_delete_request, is_undo_request, delete_or_restore
 from .note_commands import is_rename_request, is_visual_identification, explicit_name_comment, is_conversation_turn, clean_object_name, is_cancel_request
@@ -207,6 +207,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/assistant", response_model=AssistantResponse)
     async def converse(payload: AssistantRequest) -> AssistantResponse:
         history = [item.model_dump() for item in payload.history]
+        if payload.awaiting_description and payload.pending_title and re.fullmatch(r"(?:yes|yeah|yep|correct|right|that's right|that is right|yes please)[.! ]*", payload.message.strip(), re.I):
+            return AssistantResponse(text=f"Got it — {payload.pending_title}. What should the comment say?", model=assistant.model,
+                camera_used=False, camera_source=camera.source, awaiting_note=True, pending_title=payload.pending_title)
+        if is_bare_comment_request(payload.message):
+            return await memories.begin_comment(payload)
         if app_settings.llm_parser_enabled:
             try:
                 intent = await parser.parse(payload, repository.objects())

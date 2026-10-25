@@ -147,6 +147,8 @@ class CameraService:
         self._capture: cv2.VideoCapture | None = None
         self._frame_jpeg: bytes | None = None
         self._latest_frame: np.ndarray | None = None
+        self._view_samples = deque(maxlen=18)
+        self._view_sample_at = 0.0
         self._latest_frame_sequence = 0
         self._encoded_frame_sequence = 0
         self._recognized_frame_sequence = 0
@@ -253,6 +255,29 @@ class CameraService:
         with self._recognizer_lock:
             matches = self.recognizer.detect(frame)
         return frame, captured_at, matches
+
+    def stable_view(self) -> tuple[np.ndarray, datetime] | None:
+        """A recent, steady view is attention evidence, not an object identity."""
+        with self._lock:
+            now = time.monotonic()
+            if self._status != "ready" or self._latest_frame is None or now - self._capture_monotonic > 2:
+                return None
+            samples = [entry for entry in self._view_samples if now - entry[0] <= 4]
+            if len(samples) < 7 or samples[-1][0] - samples[0][0] < 2.5:
+                return None
+            current = samples[-1][1]
+            # Require the current central view to resemble the entire dwell window.
+            for _, previous in samples:
+                difference = float(np.mean(np.abs(current.astype(np.float32) - previous)))
+                if difference <= 14:
+                    continue
+                # Small head movements and exposure shifts should not reset attention.
+                if float(current.std()) < 3 or float(previous.std()) < 3:
+                    return None
+                correlation = cv2.matchTemplate(previous, current[4:-4, 4:-4], cv2.TM_CCOEFF_NORMED)
+                if float(correlation.max()) < .82:
+                    return None
+            return self._latest_frame.copy(), self._captured_at
 
     def load_reference_files(self, references: list[tuple[str, Path]]) -> None:
         loader = getattr(self.recognizer, "load_references", None)
@@ -538,6 +563,10 @@ class CameraService:
         captured_at = datetime.now(UTC)
         with self._condition:
             self._latest_frame = frame
+            if now - self._view_sample_at >= 0.35:
+                gray = cv2.cvtColor(_centre_crop(frame), cv2.COLOR_BGR2GRAY)
+                self._view_samples.append((now, cv2.resize(gray, (48, 36))))
+                self._view_sample_at = now
             self._latest_frame_sequence += 1
             self._capture_monotonic = now
             self._captured_at = captured_at

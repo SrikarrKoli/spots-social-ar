@@ -28,6 +28,8 @@ async def dispatch_intent(service, payload, intent):
             return respond('What should I call this object?')
         return await service.rename(payload, parsed_name=title)
     if action == 'add_comment':
+        if not body and not payload.pending_body:
+            return await service.begin_comment(payload, requested_title=title or intent.target_object or payload.pending_title)
         if intent.target_object:
             capture = await asyncio.to_thread(service.camera.memory_capture) if payload.include_camera else None
             matches = capture[2] if capture else []

@@ -87,11 +87,13 @@ def test_missing_note_content_asks_followup_and_saves_next_turn(client, monkeypa
     extraction = mock_capture(client, monkeypatch)
     extraction.return_value = {'body': '', 'title': 'TV'}
     first = client.post('/api/assistant', json=payload(message='Take a note')).json()
-    assert first['awaiting_note'] is True
+    assert first['awaiting_description'] is True
     assert first['saved_note'] is None
+    named = client.post('/api/assistant', json=payload('memory-name-1', message='TV', awaiting_description=True)).json()
+    assert named['awaiting_note'] is True
     assert len(client.get('/api/objects').json()) == 2
     extraction.return_value = {'body': 'Great picture quality.', 'title': 'TV'}
-    second = client.post('/api/assistant', json=payload('memory-followup-2', message='Great picture quality.', awaiting_note=True, pending_title=first['pending_title'])).json()
+    second = client.post('/api/assistant', json=payload('memory-followup-2', message='Great picture quality.', awaiting_note=True, pending_title=named['pending_title'])).json()
     assert second['saved_note']['body'] == 'Great picture quality.'
     assert second['awaiting_note'] is False
 
