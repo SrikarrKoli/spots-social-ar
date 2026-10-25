@@ -7,7 +7,8 @@ export interface Profile {
 
 export interface ObjectSummary {
   id: string;
-  marker_id: number;
+  identity_key: string;
+  identity_kind: string;
   title: string;
   description: string | null;
 }
@@ -29,7 +30,9 @@ export interface ThreadResponse {
 }
 
 export interface Detection {
-  marker_id: number;
+  identity_key: string;
+  confidence: number;
+  method: string;
   corners: [number, number][];
   center: [number, number];
   object: ObjectSummary | null;

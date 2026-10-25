@@ -23,6 +23,8 @@ class Settings:
     camera_height: int
     detection_ttl_ms: int
     marker_dictionary: str
+    recognizer: str
+    enrolled_dir: Path
     transcription_provider: str
     openai_api_key: str | None
     openai_transcription_model: str
@@ -35,7 +37,7 @@ class Settings:
             camera_source=os.getenv("APP_CAMERA_SOURCE", "camera").lower(),
             camera_index=int(os.getenv("APP_CAMERA_INDEX", "0")),
             camera_fixture=_path_env(
-                "APP_CAMERA_FIXTURE", "./markers/demo-fixture.png"
+                "APP_CAMERA_FIXTURE", "./markers/markerless-fixture.png"
             ),
             camera_width=int(os.getenv("APP_CAMERA_WIDTH", "1280")),
             camera_height=int(os.getenv("APP_CAMERA_HEIGHT", "720")),
@@ -43,6 +45,8 @@ class Settings:
             marker_dictionary=os.getenv(
                 "APP_MARKER_DICTIONARY", "DICT_4X4_50"
             ),
+            recognizer=os.getenv("APP_RECOGNIZER", "instance").lower(),
+            enrolled_dir=_path_env("APP_ENROLLED_DIR", "./data/enrolled"),
             transcription_provider=os.getenv(
                 "APP_TRANSCRIPTION_PROVIDER", "disabled"
             ).lower(),

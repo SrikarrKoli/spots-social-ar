@@ -6,19 +6,26 @@ rehearsal.
 
 ## Required before the demo
 
-- [ ] Print [the marker sheet](markers/printable-markers.svg) at 100% scale.
-- [ ] Attach marker `#7` to the concert poster without covering its black border.
-- [ ] Attach marker `#23` to the book without covering its black border.
+- [ ] Run `.venv/bin/python scripts/generate_references.py` to (re)generate the
+  enrolment artwork in `objects/` and `markers/markerless-fixture.png`.
+- [ ] Use the concert-poster artwork itself as the poster (printed or on screen)
+  — **no marker is attached to anything**.
+- [ ] Use the book-cover artwork in `objects/favorite-book.png` as the book cover.
 - [ ] Confirm the glasses webcam appears on the laptop and determine its OpenCV
   index (`0`, `1`, and so on).
 - [ ] Set `APP_CAMERA_INDEX` in `.env` to the glasses webcam index.
 - [ ] Grant camera access to the terminal application used to run Locus.
-- [ ] Start Locus in camera mode and verify both physical markers are recognized
-  at the intended demo distance and lighting.
-- [ ] Confirm the overlay remains positioned beside the marker while moving the
+- [ ] Start Locus in camera mode and verify both physical objects are recognised
+  by appearance at the intended demo distance and lighting.
+- [ ] Confirm the overlay remains positioned beside the object while moving the
   camera naturally.
-- [ ] Confirm the preview disappears shortly after a marker leaves the frame.
-- [ ] Confirm the correct object is selected when both markers are visible.
+- [ ] Confirm the preview disappears shortly after an object leaves the frame.
+- [ ] Confirm the correct object is selected when both objects are visible.
+- [ ] Swap the poster/book positions and confirm each thread follows its object.
+- [ ] Hold up an unenrolled lookalike and confirm Locus reports unknown rather
+  than attaching the wrong thread.
+- [ ] (Stretch) Enrol two visually distinct mugs from photos and show they keep
+  separate threads.
 
 ## Microphone and transcription
 
@@ -49,7 +56,7 @@ speech-to-text should be described as unconfigured rather than demonstrated.
 
 - [ ] Open two browser windows at `http://127.0.0.1:8000`.
 - [ ] Choose a different demo profile in each window.
-- [ ] In the first window, recognize marker `#7` and open the concert thread.
+- [ ] In the first window, recognise the concert poster and open the concert thread.
 - [ ] Reply to “Anyone want to go Friday?” using the final input method.
 - [ ] Turn the camera away while composing and confirm the composer remains
   locked to the concert poster and the intended parent post.
@@ -86,7 +93,7 @@ speech-to-text should be described as unconfigured rather than demonstrated.
 
 ## Nice to have only after the required checklist
 
-- [ ] Add a short first-run hint explaining where to position a marker.
+- [ ] Add a short first-run hint explaining how to enrol/position an object.
 - [ ] Add an unobtrusive recording timer.
 - [ ] Capture a backup screen recording of the successful demo flow.
 - [ ] Add bounded voice-command intent parsing only if the core demo is already
@@ -94,6 +101,7 @@ speech-to-text should be described as unconfigured rather than demonstrated.
 
 ## Completion gate
 
-The MVP is ready to present when one physical concert marker is recognized, a
-real typed or transcribed reply can be reviewed and published, the message is
-visible in a second browser, and the known demo state can be restored reliably.
+The MVP is ready to present when one physical concert poster is recognised by
+its own artwork (no marker), a real typed or transcribed reply can be reviewed
+and published, the message is visible in a second browser, and the known demo
+state can be restored reliably.

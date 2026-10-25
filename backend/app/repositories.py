@@ -23,6 +23,9 @@ def _profile(row: object) -> Profile:
     )
 
 
+_OBJECT_COLUMNS = "id, identity_key, identity_kind, title, description"
+
+
 class Repository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -35,25 +38,77 @@ class Repository:
             ).fetchall()
         return [Profile.model_validate(dict(row)) for row in rows]
 
-    def object_by_marker(self, marker_id: int) -> ObjectSummary | None:
+    def object_by_identity(self, identity_key: str) -> ObjectSummary | None:
         with self.database.connect() as connection:
             row = connection.execute(
-                "SELECT id, marker_id, title, description FROM objects WHERE marker_id = ?",
-                (marker_id,),
+                f"SELECT {_OBJECT_COLUMNS} FROM objects "
+                "WHERE identity_key = ? OR CAST(marker_id AS TEXT) = ?",
+                (identity_key, identity_key),
             ).fetchone()
         return ObjectSummary.model_validate(dict(row)) if row else None
+
+    # Backwards-compatible alias for the legacy ArUco fixture path.
+    def object_by_marker(self, marker_id: int) -> ObjectSummary | None:
+        return self.object_by_identity(str(marker_id))
+
+    def object_references(self) -> list[tuple[str, str]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.identity_key, f.reference_path
+                FROM object_fingerprints f
+                JOIN objects o ON o.id = f.object_id
+                WHERE f.reference_path IS NOT NULL AND o.identity_key IS NOT NULL
+                ORDER BY o.id, f.id
+                """
+            ).fetchall()
+        return [(row["identity_key"], row["reference_path"]) for row in rows]
+
+    def enroll_object(
+        self,
+        *,
+        object_id: str,
+        title: str,
+        description: str | None,
+        reference_path: str,
+    ) -> ObjectSummary:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO objects(
+                    id, identity_key, identity_kind, reference_path, title, description
+                ) VALUES (?, ?, 'instance', ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    description = excluded.description,
+                    reference_path = excluded.reference_path
+                """,
+                (object_id, object_id, reference_path, title, description),
+            )
+            connection.execute(
+                """
+                INSERT INTO object_fingerprints(object_id, kind, reference_path)
+                VALUES (?, 'reference-image', ?)
+                """,
+                (object_id, reference_path),
+            )
+            row = connection.execute(
+                f"SELECT {_OBJECT_COLUMNS} FROM objects WHERE id = ?",
+                (object_id,),
+            ).fetchone()
+        return ObjectSummary.model_validate(dict(row))
 
     def objects(self) -> list[ObjectSummary]:
         with self.database.connect() as connection:
             rows = connection.execute(
-                "SELECT id, marker_id, title, description FROM objects ORDER BY title"
+                f"SELECT {_OBJECT_COLUMNS} FROM objects ORDER BY title"
             ).fetchall()
         return [ObjectSummary.model_validate(dict(row)) for row in rows]
 
     def object_by_id(self, object_id: str) -> ObjectSummary | None:
         with self.database.connect() as connection:
             row = connection.execute(
-                "SELECT id, marker_id, title, description FROM objects WHERE id = ?",
+                f"SELECT {_OBJECT_COLUMNS} FROM objects WHERE id = ?",
                 (object_id,),
             ).fetchone()
         return ObjectSummary.model_validate(dict(row)) if row else None

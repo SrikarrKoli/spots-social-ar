@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
+import cv2
+import numpy as np
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,6 +27,7 @@ from .models import (
     ThreadResponse,
     TranscriptionResponse,
 )
+from .recognition import build_recognizer
 from .repositories import InvalidReplyError, NotFoundError, Repository
 from .transcription import (
     TranscriptionError,
@@ -54,6 +60,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         height=app_settings.camera_height,
         detection_ttl_ms=app_settings.detection_ttl_ms,
         dictionary_name=app_settings.marker_dictionary,
+        recognizer=build_recognizer(
+            app_settings.recognizer,
+            dictionary_name=app_settings.marker_dictionary,
+        ),
     )
     transcription = build_transcription_provider(
         provider=app_settings.transcription_provider,
@@ -65,6 +75,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         seed_demo(database)
+        references = [
+            (identity_key, ROOT / reference_path)
+            for identity_key, reference_path in repository.object_references()
+        ]
+        camera.load_reference_files(references)
         camera.start()
         yield
         camera.stop()
@@ -97,12 +112,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await asyncio.to_thread(repository.objects)
 
     @app.get(
-        "/api/objects/by-marker/{marker_id}", response_model=ObjectSummary
+        "/api/objects/by-identity/{identity_key}", response_model=ObjectSummary
     )
-    async def object_by_marker(marker_id: int) -> ObjectSummary:
-        record = await asyncio.to_thread(repository.object_by_marker, marker_id)
+    async def object_by_identity(identity_key: str) -> ObjectSummary:
+        record = await asyncio.to_thread(
+            repository.object_by_identity, identity_key
+        )
         if record is None:
-            raise HTTPException(status_code=404, detail="Marker is not registered")
+            raise HTTPException(status_code=404, detail="Object is not enrolled")
+        return record
+
+    @app.post(
+        "/api/objects/enroll",
+        response_model=ObjectSummary,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def enroll_object(
+        title: str = Form(...),
+        description: str | None = Form(default=None),
+        image: UploadFile = File(...),
+    ) -> ObjectSummary:
+        content = await image.read(10 * 1024 * 1024 + 1)
+        if not content or len(content) > 10 * 1024 * 1024:
+            raise HTTPException(
+                status_code=413, detail="Enrolment image must be 1 byte–10 MB"
+            )
+        frame = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise HTTPException(
+                status_code=422, detail="Enrolment file is not a readable image"
+            )
+        slug = re.sub(r"[^a-z0-9]+", "-", title.strip().lower()).strip("-")
+        if not slug:
+            raise HTTPException(status_code=422, detail="Title needs a letter or digit")
+        digest = hashlib.sha1(content).hexdigest()[:8]
+        object_id = f"{slug}-{digest}"
+        enrolled_dir = app_settings.enrolled_dir
+        enrolled_dir.mkdir(parents=True, exist_ok=True)
+        reference_file = enrolled_dir / f"{object_id}.png"
+        reference_file.write_bytes(content)
+        try:
+            relative = reference_file.relative_to(ROOT)
+            reference_path = str(relative)
+        except ValueError:
+            reference_path = str(reference_file)
+        if not camera.enroll_reference(object_id, frame):
+            raise HTTPException(
+                status_code=422,
+                detail="That view has too little visible texture to recognise later",
+            )
+        record = await asyncio.to_thread(
+            repository.enroll_object,
+            object_id=object_id,
+            title=title.strip(),
+            description=description.strip() if description else None,
+            reference_path=reference_path,
+        )
         return record
 
     @app.get("/api/objects/{object_id}/posts", response_model=ThreadResponse)
@@ -137,7 +202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         snapshot = camera.snapshot()
         for detection in snapshot["detections"]:
             object_record = await asyncio.to_thread(
-                repository.object_by_marker, detection["marker_id"]
+                repository.object_by_identity, detection["identity_key"]
             )
             detection["object"] = object_record
             if object_record is not None:

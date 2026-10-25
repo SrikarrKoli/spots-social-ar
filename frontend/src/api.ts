@@ -73,6 +73,15 @@ export const api = {
       body: JSON.stringify(body),
     }).then((response) => parseResponse<Post>(response));
   },
+  enrollObject(title: string, description: string, image: File) {
+    const form = new FormData();
+    form.append("title", title);
+    if (description) form.append("description", description);
+    form.append("image", image);
+    return fetch("/api/objects/enroll", { method: "POST", body: form }).then(
+      (response) => parseResponse<ObjectSummary>(response),
+    );
+  },
   transcribe(blob: Blob) {
     const form = new FormData();
     const extension = blob.type.includes("wav") ? "wav" : "webm";

@@ -19,6 +19,8 @@ def make_test_settings(database_path: Path) -> Settings:
         camera_height=720,
         detection_ttl_ms=750,
         marker_dictionary="DICT_4X4_50",
+        recognizer="instance",
+        enrolled_dir=database_path.parent / "enrolled",
         transcription_provider="disabled",
         openai_api_key=None,
         openai_transcription_model="gpt-transcribe",

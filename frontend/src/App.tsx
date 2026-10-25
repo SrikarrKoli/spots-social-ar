@@ -13,7 +13,7 @@ export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [recognition, setRecognition] = useState<RecognitionResponse | null>(null);
   const [recognitionError, setRecognitionError] = useState<string | null>(null);
-  const [manualMarkerId, setManualMarkerId] = useState<number | null>(null);
+  const [manualIdentityKey, setManualIdentityKey] = useState<string | null>(null);
   const [selectedObject, setSelectedObject] = useState<ObjectSummary | null>(null);
 
   useEffect(() => {
@@ -83,21 +83,24 @@ export default function App() {
         <CameraStage
           recognition={recognition}
           recognitionError={recognitionError}
-          manualMarkerId={manualMarkerId}
-          onManualMarker={setManualMarkerId}
+          manualIdentityKey={manualIdentityKey}
+          onManualIdentity={setManualIdentityKey}
           onOpenObject={(detection) => detection.object && setSelectedObject(detection.object)}
         />
         <ThreadPanel
           object={selectedObject}
           availableObjects={objects}
           onSelectObject={setSelectedObject}
+          onObjectEnrolled={(created) =>
+            setObjects((current) => [...current.filter((item) => item.id !== created.id), created])
+          }
           profile={currentProfile}
           transcriptionConfigured={health?.transcription_status === "configured"}
         />
       </div>
 
       <footer className="app-footer">
-        <span><i /> Recognition data expires when a marker leaves view</span>
+        <span><i /> Recognition expires when an enrolled object leaves view</span>
         <span>LOCUS PROTOTYPE · LOCAL DEMO</span>
       </footer>
     </main>

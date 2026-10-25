@@ -17,7 +17,7 @@ def post_payload(**overrides):
     return payload
 
 
-def test_seeded_demo_and_marker_resolution(client: TestClient):
+def test_seeded_demo_and_identity_resolution(client: TestClient):
     profiles = client.get("/api/profiles")
     assert profiles.status_code == 200
     assert {profile["id"] for profile in profiles.json()} == {
@@ -31,9 +31,11 @@ def test_seeded_demo_and_marker_resolution(client: TestClient):
         "favorite-book",
     }
 
-    marker = client.get("/api/objects/by-marker/7")
-    assert marker.status_code == 200
-    assert marker.json()["id"] == "concert-poster"
+    identity = client.get("/api/objects/by-identity/concert-poster")
+    assert identity.status_code == 200
+    assert identity.json()["id"] == "concert-poster"
+    assert identity.json()["identity_key"] == "concert-poster"
+    assert "marker_id" not in identity.json()
 
     thread = client.get("/api/objects/concert-poster/posts").json()
     assert thread["posts"][0]["body"] == "Anyone want to go Friday?"
@@ -117,3 +119,30 @@ def test_disabled_transcription_is_explicit(client: TestClient):
     )
     assert response.status_code == 503
     assert "not configured" in response.json()["detail"]
+
+
+def test_enroll_object_from_photo(client: TestClient):
+    import io
+
+    import cv2
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    image = np.full((240, 320, 3), (40, 60, 90), np.uint8)
+    for _ in range(120):
+        x, y = int(rng.integers(0, 300)), int(rng.integers(0, 220))
+        cv2.circle(image, (x, y), 5, (200, 180, 60), -1)
+    cv2.putText(image, "BLUE MUG", (30, 130), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
+    success, encoded = cv2.imencode(".png", image)
+    assert success
+
+    response = client.post(
+        "/api/objects/enroll",
+        data={"title": "Blue mug"},
+        files={"image": ("mug.png", io.BytesIO(encoded.tobytes()), "image/png")},
+    )
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert created["title"] == "Blue mug"
+    assert created["identity_key"] == created["id"]
+    assert client.get(f"/api/objects/by-identity/{created['identity_key']}").status_code == 200

@@ -18,9 +18,21 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS objects (
     id TEXT PRIMARY KEY,
-    marker_id INTEGER NOT NULL UNIQUE,
+    marker_id INTEGER UNIQUE,
+    identity_key TEXT UNIQUE,
+    identity_kind TEXT NOT NULL DEFAULT 'instance',
+    reference_path TEXT,
     title TEXT NOT NULL,
     description TEXT
+);
+
+CREATE TABLE IF NOT EXISTS object_fingerprints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    object_id TEXT NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'reference-image',
+    reference_path TEXT,
+    embedding BLOB,
+    created_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS posts (
@@ -49,6 +61,30 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            # Migrate pre-markerless databases in place.
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(objects)")
+            }
+            # SQLite cannot add a UNIQUE column to an existing table, so
+            # add plain columns and enforce uniqueness with an index after
+            # backfilling.
+            for column, declaration in (
+                ("identity_key", "TEXT"),
+                ("identity_kind", "TEXT NOT NULL DEFAULT 'instance'"),
+                ("reference_path", "TEXT"),
+            ):
+                if column not in columns:
+                    connection.execute(
+                        f"ALTER TABLE objects ADD COLUMN {column} {declaration}"
+                    )
+            connection.execute(
+                "UPDATE objects SET identity_key = id WHERE identity_key IS NULL"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_objects_identity_key "
+                "ON objects(identity_key)"
+            )
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -69,6 +105,7 @@ class Database:
     def reset(self) -> None:
         with self.connect() as connection:
             connection.execute("DELETE FROM posts")
+            connection.execute("DELETE FROM object_fingerprints")
             connection.execute("DELETE FROM objects")
             connection.execute("DELETE FROM users")
             connection.execute("DELETE FROM sqlite_sequence WHERE name = 'posts'")
@@ -85,12 +122,18 @@ OBJECTS = (
     (
         "concert-poster",
         7,
+        "concert-poster",
+        "planar",
+        "objects/concert-poster.png",
         "Concert poster",
         "Neon Harbor at The Lantern — Friday night.",
     ),
     (
         "favorite-book",
         23,
+        "favorite-book",
+        "planar",
+        "objects/favorite-book.png",
         "Favorite book",
         "A shared copy of The Left Hand of Darkness.",
     ),
@@ -151,15 +194,33 @@ def seed_demo(database: Database, *, reset: bool = False) -> None:
         )
         connection.executemany(
             """
-            INSERT INTO objects(id, marker_id, title, description)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO objects(
+                id, marker_id, identity_key, identity_kind, reference_path,
+                title, description
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 marker_id = excluded.marker_id,
+                identity_key = excluded.identity_key,
+                identity_kind = excluded.identity_kind,
+                reference_path = excluded.reference_path,
                 title = excluded.title,
                 description = excluded.description
             """,
             OBJECTS,
         )
+        for object_id, _marker, _key, _kind, reference_path, _t, _d in OBJECTS:
+            connection.execute(
+                """
+                INSERT INTO object_fingerprints(object_id, kind, reference_path)
+                SELECT ?, 'reference-image', ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM object_fingerprints
+                    WHERE object_id = ? AND reference_path = ?
+                )
+                """,
+                (object_id, reference_path, object_id, reference_path),
+            )
 
         seed_ids: dict[str, int] = {}
         for seed_key, object_id, author_id, body, created_at, parent_seed in SEED_POSTS:

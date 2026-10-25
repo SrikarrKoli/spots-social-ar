@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { lockTarget } from "./target";
 import type { ObjectSummary, Post } from "./types";
 
-const concert: ObjectSummary = { id: "concert", marker_id: 7, title: "Concert", description: null };
-const book: ObjectSummary = { id: "book", marker_id: 23, title: "Book", description: null };
+const concert: ObjectSummary = { id: "concert", identity_key: "concert", identity_kind: "planar", title: "Concert", description: null };
+const book: ObjectSummary = { id: "book", identity_key: "book", identity_kind: "planar", title: "Book", description: null };
 const parent: Post = {
   id: 42,
   object_id: "concert",

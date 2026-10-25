@@ -15,7 +15,8 @@ class Profile(BaseModel):
 
 class ObjectSummary(BaseModel):
     id: str
-    marker_id: int
+    identity_key: str
+    identity_kind: str = "instance"
     title: str
     description: str | None = None
 
@@ -58,7 +59,9 @@ class CreatePostRequest(BaseModel):
 
 
 class Detection(BaseModel):
-    marker_id: int
+    identity_key: str
+    confidence: float = 1.0
+    method: str = "instance-features"
     corners: list[list[float]]
     center: list[float]
     object: ObjectSummary | None = None

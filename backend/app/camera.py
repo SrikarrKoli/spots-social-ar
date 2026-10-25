@@ -9,35 +9,17 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .recognition import ArucoRecognizer, Recognizer, detect_markers, marker_dictionary
+
+__all__ = ["CameraService", "detect_markers", "marker_dictionary"]
+
 
 @dataclass(slots=True)
 class MarkerTrack:
     corners: np.ndarray
+    confidence: float
+    method: str
     seen_monotonic: float
-
-
-def marker_dictionary(name: str) -> cv2.aruco.Dictionary:
-    dictionary_id = getattr(cv2.aruco, name, None)
-    if dictionary_id is None:
-        raise ValueError(f"Unsupported ArUco dictionary: {name}")
-    return cv2.aruco.getPredefinedDictionary(dictionary_id)
-
-
-def detect_markers(
-    frame: np.ndarray, dictionary_name: str = "DICT_4X4_50"
-) -> list[tuple[int, np.ndarray]]:
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    dictionary = marker_dictionary(dictionary_name)
-    detector = cv2.aruco.ArucoDetector(
-        dictionary, cv2.aruco.DetectorParameters()
-    )
-    corners, ids, _ = detector.detectMarkers(gray)
-    if ids is None:
-        return []
-    return [
-        (int(marker_id), marker_corners.reshape(4, 2).astype(float))
-        for marker_id, marker_corners in zip(ids.flatten(), corners, strict=True)
-    ]
 
 
 class CameraService:
@@ -53,6 +35,7 @@ class CameraService:
         height: int,
         detection_ttl_ms: int,
         dictionary_name: str,
+        recognizer: Recognizer | None = None,
     ) -> None:
         if source not in {"camera", "fixture", "disabled"}:
             raise ValueError("Camera source must be camera, fixture, or disabled")
@@ -63,6 +46,7 @@ class CameraService:
         self.requested_height = height
         self.detection_ttl_seconds = detection_ttl_ms / 1000
         self.dictionary_name = dictionary_name
+        self.recognizer: Recognizer = recognizer or ArucoRecognizer(dictionary_name)
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -72,7 +56,7 @@ class CameraService:
         self._frame_width = width
         self._frame_height = height
         self._captured_at: datetime | None = None
-        self._tracks: dict[int, MarkerTrack] = {}
+        self._tracks: dict[str, MarkerTrack] = {}
         self._status = "disabled" if source == "disabled" else "starting"
         self._message: str | None = (
             "Camera disabled by configuration" if source == "disabled" else None
@@ -104,6 +88,15 @@ class CameraService:
     def status(self) -> str:
         with self._lock:
             return self._status
+
+    def load_reference_files(self, references: list[tuple[str, Path]]) -> None:
+        loader = getattr(self.recognizer, "load_references", None)
+        if loader is not None:
+            loader(references)
+
+    def enroll_reference(self, identity_key: str, image: np.ndarray) -> bool:
+        add = getattr(self.recognizer, "add_reference", None)
+        return bool(add(identity_key, image)) if add is not None else False
 
     def _run(self) -> None:
         if self.source == "fixture":
@@ -152,17 +145,20 @@ class CameraService:
 
     def _process_frame(self, frame: np.ndarray) -> None:
         now_monotonic = time.monotonic()
-        detections = detect_markers(frame, self.dictionary_name)
+        detections = self.recognizer.detect(frame)
 
         with self._lock:
-            for marker_id, corners in detections:
-                previous = self._tracks.get(marker_id)
+            for detection in detections:
+                corners = np.asarray(detection.corners, dtype=float)
+                previous = self._tracks.get(detection.identity_key)
                 smoothed = (
                     previous.corners * 0.6 + corners * 0.4
                     if previous is not None
                     else corners
                 )
-                self._tracks[marker_id] = MarkerTrack(smoothed, now_monotonic)
+                self._tracks[detection.identity_key] = MarkerTrack(
+                    smoothed, detection.confidence, detection.method, now_monotonic
+                )
 
             self._expire_tracks(now_monotonic)
             height, width = frame.shape[:2]
@@ -171,7 +167,7 @@ class CameraService:
             self._captured_at = datetime.now(UTC)
             self._status = "ready"
             self._message = (
-                "Development fixture — real marker detection"
+                "Development fixture — real object recognition"
                 if self.source == "fixture"
                 else None
             )
@@ -183,23 +179,25 @@ class CameraService:
 
     def _expire_tracks(self, now_monotonic: float) -> None:
         expired = [
-            marker_id
-            for marker_id, track in self._tracks.items()
+            identity_key
+            for identity_key, track in self._tracks.items()
             if now_monotonic - track.seen_monotonic > self.detection_ttl_seconds
         ]
-        for marker_id in expired:
-            del self._tracks[marker_id]
+        for identity_key in expired:
+            del self._tracks[identity_key]
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             self._expire_tracks(time.monotonic())
             detections = []
-            for marker_id, track in self._tracks.items():
+            for identity_key, track in self._tracks.items():
                 corners = track.corners.tolist()
                 center = track.corners.mean(axis=0).tolist()
                 detections.append(
                     {
-                        "marker_id": marker_id,
+                        "identity_key": identity_key,
+                        "confidence": track.confidence,
+                        "method": track.method,
                         "corners": corners,
                         "center": center,
                     }
@@ -209,7 +207,7 @@ class CameraService:
                 key=lambda item: (
                     (item["center"][0] - frame_center[0]) ** 2
                     + (item["center"][1] - frame_center[1]) ** 2,
-                    item["marker_id"],
+                    item["identity_key"],
                 )
             )
             return {

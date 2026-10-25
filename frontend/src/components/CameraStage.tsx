@@ -5,16 +5,16 @@ import type { Detection, RecognitionResponse } from "../types";
 interface Props {
   recognition: RecognitionResponse | null;
   recognitionError: string | null;
-  manualMarkerId: number | null;
-  onManualMarker: (markerId: number) => void;
+  manualIdentityKey: string | null;
+  onManualIdentity: (identityKey: string) => void;
   onOpenObject: (detection: Detection) => void;
 }
 
 export function CameraStage({
   recognition,
   recognitionError,
-  manualMarkerId,
-  onManualMarker,
+  manualIdentityKey,
+  onManualIdentity,
   onOpenObject,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -37,7 +37,7 @@ export function CameraStage({
     [recognition],
   );
   const active =
-    registered.find((item) => item.marker_id === manualMarkerId) ?? registered[0];
+    registered.find((item) => item.identity_key === manualIdentityKey) ?? registered[0];
   const activePosition =
     active && recognition
       ? mapFramePoint(active.center, stageSize, {
@@ -65,7 +65,7 @@ export function CameraStage({
           <img
             className="camera-feed"
             src="/api/camera/stream"
-            alt="Live camera view used to recognize prepared markers"
+            alt="Live camera view used to recognize enrolled objects"
           />
         )}
 
@@ -87,7 +87,7 @@ export function CameraStage({
         {!cameraMissing && recognition?.status === "ready" && registered.length === 0 && (
           <div className="camera-hint">
             <span className="scan-glyph">⌗</span>
-            Look at a prepared object marker
+            Look at an enrolled object
           </div>
         )}
 
@@ -100,6 +100,9 @@ export function CameraStage({
             <span className="object-peek__pin" />
             <span className="object-peek__label">NEARBY CONVERSATION</span>
             <strong>{active.object.title}</strong>
+            <span className="object-peek__meta">
+              Recognised instance · {Math.round(active.confidence * 100)}% match
+            </span>
             {active.preview ? (
               <>
                 <span className="object-peek__meta">
@@ -118,9 +121,9 @@ export function CameraStage({
           <div className="visible-objects" aria-label="Visible objects">
             {registered.map((detection) => (
               <button
-                key={detection.marker_id}
-                className={active?.marker_id === detection.marker_id ? "is-active" : ""}
-                onClick={() => onManualMarker(detection.marker_id)}
+                key={detection.identity_key}
+                className={active?.identity_key === detection.identity_key ? "is-active" : ""}
+                onClick={() => onManualIdentity(detection.identity_key)}
               >
                 {detection.object?.title}
               </button>

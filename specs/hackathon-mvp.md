@@ -3,6 +3,15 @@
 Status: Approved for uninterrupted implementation
 Last updated: 2026-10-24
 
+> **Amendment (markerless):** Recognition no longer uses printed ArUco markers.
+> Enrolled objects are recognised by their own appearance (instance
+> recognition, not classification) via `backend/app/recognition.py`; identity
+> is keyed by `identity_key`, enrolment is by photo, and ambiguous sightings
+> report unknown. ArUco remains only as a legacy dev/test fixture. The pitch
+> (scalable) version targets native glasses AR — see "Demo vs. the scalable
+> (pitch) version" in the README. The original marker-based spec follows as
+> historical context.
+
 ## Context
 
 Build the smallest reliable social network attached to physical objects. A

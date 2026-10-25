@@ -10,6 +10,7 @@ interface Props {
   object: ObjectSummary | null;
   availableObjects: ObjectSummary[];
   onSelectObject: (object: ObjectSummary) => void;
+  onObjectEnrolled?: (object: ObjectSummary) => void;
   profile: Profile | null;
   transcriptionConfigured: boolean;
 }
@@ -53,7 +54,53 @@ function Message({ post, onReply }: { post: Post; onReply: (post: Post) => void 
   );
 }
 
-export function ThreadPanel({ object, availableObjects, onSelectObject, profile, transcriptionConfigured }: Props) {
+function EnrollObject({ onEnrolled }: { onEnrolled: (object: ObjectSummary) => void }) {
+  const [title, setTitle] = useState("");
+  const [image, setImage] = useState<File | null>(null);
+  const [state, setState] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (!title.trim() || !image) return;
+    setBusy(true);
+    setState(null);
+    try {
+      const created = await api.enrollObject(title.trim(), "", image);
+      onEnrolled(created);
+      setState(`Enrolled “${created.title}” — point the camera at it.`);
+      setTitle("");
+      setImage(null);
+    } catch (error) {
+      setState(error instanceof Error ? error.message : "Enrolment failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="thread-picker">
+      <span>ENROL A NEW OBJECT (NO MARKER)</span>
+      <input
+        aria-label="Object name"
+        placeholder="e.g. Blue mug"
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+      />
+      <input
+        aria-label="Photo of the object"
+        type="file"
+        accept="image/*"
+        onChange={(event) => setImage(event.target.files?.[0] ?? null)}
+      />
+      <button disabled={busy || !title.trim() || !image} onClick={() => void submit()}>
+        {busy ? "Enrolling…" : "Enrol from this photo"}
+      </button>
+      {state && <small>{state}</small>}
+    </div>
+  );
+}
+
+export function ThreadPanel({ object, availableObjects, onSelectObject, onObjectEnrolled, profile, transcriptionConfigured }: Props) {
   const [thread, setThread] = useState<ThreadResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,15 +143,21 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, profile,
         <div className="empty-thread-mark">⌖</div>
         <p className="eyebrow">OBJECT THREAD</p>
         <h2>No conversation open</h2>
-        <p>Look at a prepared marker, then open its nearby conversation.</p>
+        <p>Look at an enrolled object, then open its nearby conversation.</p>
         <div className="thread-picker">
           <span>OR BROWSE A DEMO THREAD</span>
           {availableObjects.map((availableObject) => (
             <button key={availableObject.id} onClick={() => onSelectObject(availableObject)}>
-              {availableObject.title} <small>Marker #{availableObject.marker_id}</small>
+              {availableObject.title} <small>Enrolled object</small>
             </button>
           ))}
         </div>
+        <EnrollObject
+          onEnrolled={(created) => {
+            onObjectEnrolled?.(created);
+            onSelectObject(created);
+          }}
+        />
       </aside>
     );
   }
@@ -125,7 +178,7 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, profile,
       <div className="thread-summary">
         <span>{thread?.posts.length ?? 0} posts</span>
         <span>{replyCount} replies</span>
-        <span>Marker #{object.marker_id}</span>
+        <span>Attached to this object, not its category</span>
       </div>
 
       <div className="thread-body" aria-live="polite">
@@ -164,7 +217,7 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, profile,
           >
             <span aria-hidden="true">＋</span> Leave a post
           </button>
-          <span>Thread stays open if the marker leaves view.</span>
+          <span>Thread stays open if the object leaves view.</span>
         </div>
       )}
     </aside>
