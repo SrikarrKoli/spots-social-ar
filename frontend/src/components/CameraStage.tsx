@@ -22,7 +22,9 @@ interface Props {
   overlaysVisible: boolean;
   // Bumped by the demo menu (or ?demo=open) to open the featured note on purpose.
   demoOpenSignal: number;
-  onAskAssistant: () => void;
+  onAskAssistant: (object?: ObjectSummary | null, prompt?: string) => void;
+  assistantOpen?: boolean;
+  assistantPhase?: AssistantState;
 }
 
 export type SceneMode = "demo" | "live";
@@ -52,6 +54,8 @@ export function CameraStage({
   overlaysVisible,
   demoOpenSignal,
   onAskAssistant,
+  assistantOpen = false,
+  assistantPhase = "idle",
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
@@ -166,6 +170,7 @@ export function CameraStage({
   const card = cardObject && (
     <NoteCard
       key={cardObject.id}
+      onAskAssistant={(prompt) => onAskAssistant(cardObject, prompt)}
       object={cardObject}
       thread={threads[cardObject.id]}
       viewer={viewer}
@@ -183,7 +188,8 @@ export function CameraStage({
     />
   );
 
-  const activateAssistant = onAskAssistant;
+  const activateAssistant = () => onAskAssistant(cardObject);
+  const displayState = assistantOpen ? assistantPhase : assistantState;
 
   return (
     <section className="camera-shell" aria-label="Spots glasses prototype">
@@ -224,24 +230,24 @@ export function CameraStage({
                 }}
               />
             ))}
-            {cardOpen && <div className="g-card-slot" style={cardStyle}>{card}</div>}
+            {cardOpen && !assistantOpen && <div className="g-card-slot" style={cardStyle}>{card}</div>}
           </div>
         )}
 
         {toast && <GlassesToast message={toast} onDone={() => setToast(null)} />}
 
         {overlaysVisible && (
-          <div className={`muse-control muse-control--${assistantState}`}>
+          <div className={`muse-control muse-control--${displayState}`}>
             <button
               className="muse-control__button"
               onClick={activateAssistant}
-              aria-label={assistantState === "idle" ? "Talk to Spots" : `Spots: ${assistantState}`}
+              aria-label={displayState === "idle" ? "Ask Meta AI" : `Meta AI: ${displayState}`}
               title="Voice assistant"
             >
               <span className="muse-control__ring" aria-hidden="true" />
               <MuseEmblem />
               <span className="muse-control__status" role="status" aria-live="polite">
-                {assistantState === "listening" ? "Listening…" : assistantState === "thinking" ? "Thinking…" : assistantState === "speaking" ? "Speaking…" : assistantState === "error" ? "Try again" : "Talk to Spots"}
+                {displayState === "listening" ? "Listening…" : displayState === "thinking" ? "Thinking…" : displayState === "speaking" ? "Speaking…" : displayState === "error" ? "Try again" : "Ask Meta AI"}
               </span>
               <span className="muse-control__wave" aria-hidden="true"><i /><i /><i /><i /></span>
             </button>
@@ -253,7 +259,7 @@ export function CameraStage({
             <span className="empty-icon"><Icon name="camera" /></span>
             <h2>Live camera unavailable</h2>
             <p>{liveError ?? recognitionError}</p>
-            <button onClick={() => onModeChange("demo")}>Return to restaurant demo</button>
+            <p>Reconnect the Brio camera to restore the live view.</p>
           </div>
         )}
       </div>

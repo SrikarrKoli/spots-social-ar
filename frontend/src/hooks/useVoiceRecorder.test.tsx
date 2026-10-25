@@ -62,3 +62,19 @@ it("deduplicates simultaneous stop calls and returns the recorded audio", async 
   });
   expect(stopTrack).toHaveBeenCalledTimes(1);
 });
+
+it("reports a pending permission prompt and releases a stream granted after timeout", async () => {
+  vi.useFakeTimers();
+  let permit!: (value: typeof stream) => void;
+  getUserMedia.mockImplementation(() => new Promise(resolve => { permit = resolve; }));
+  const hook = renderHook(() => useVoiceRecorder());
+  let pending!: Promise<void>;
+  act(() => { pending = hook.result.current.start(); });
+  const rejected = expect(pending).rejects.toThrow("Microphone access is waiting");
+  await act(async () => { await vi.advanceTimersByTimeAsync(12000); });
+  await rejected;
+  await act(async () => { permit(stream); await Promise.resolve(); });
+  expect(stopTrack).toHaveBeenCalledTimes(1);
+  expect(hook.result.current.recording).toBe(false);
+  vi.useRealTimers();
+});

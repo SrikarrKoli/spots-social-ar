@@ -7,10 +7,10 @@ import type { AssistantMessage, HealthResponse, ObjectSummary, Post } from "../t
 
 type Phase = "idle" | "starting" | "listening" | "transcribing" | "thinking" | "speaking";
 
-export function AssistantPanel({ health, object, authorId, onSaved }: { health: HealthResponse | null; object: ObjectSummary | null; authorId: string; onSaved: (object: ObjectSummary) => void }) {
+export function AssistantPanel({ health, object, authorId, onSaved, lens = false, autoListen = false, initialInput = "", onPhaseChange, onClose }: { health: HealthResponse | null; object: ObjectSummary | null; authorId: string; onSaved: (object: ObjectSummary) => void; onClose?: () => void; lens?: boolean; autoListen?: boolean; initialInput?: string; onPhaseChange?: (phase: Phase) => void }) {
   const recorder = useVoiceRecorder();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialInput);
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [handsFree, setHandsFree] = useState(false);
@@ -44,6 +44,15 @@ export function AssistantPanel({ health, object, authorId, onSaved }: { health: 
   const ready = health?.assistant_status === "ready";
   const voiceReady = ready && health?.transcription_status === "configured";
 
+  const autoStarted = useRef(false);
+  useEffect(() => { onPhaseChange?.(phase); }, [phase, onPhaseChange]);
+  useEffect(() => {
+    if (!autoListen || !voiceReady || autoStarted.current) return;
+    autoStarted.current = true;
+    generation.current += 1;
+    running.current = true; setHandsFree(true);
+    void listenRef.current();
+  }, [autoListen, voiceReady]);
   useEffect(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight; }, [messages, phase]);
   useEffect(() => () => {
     running.current = false;
@@ -177,11 +186,29 @@ export function AssistantPanel({ health, object, authorId, onSaved }: { health: 
     }
   }
 
+  if (lens) return <section className={`voice-hud voice-hud--${phase}`} aria-label="Meta AI conversation">
+    <header className="voice-hud__header"><span className="voice-hud__orb" aria-hidden="true" /><strong>{phase === "listening" ? "Listening" : phase === "starting" ? "Opening microphone" : phase === "thinking" ? "Thinking" : phase === "transcribing" ? "Transcribing" : phase === "speaking" ? "Meta AI" : "Meta AI"}</strong><button aria-label="Close voice conversation" onClick={onClose}>×</button></header>
+    <div className="voice-hud__captions" aria-live="polite" ref={messagesRef}>
+      {!messages.length && !error && <p className="voice-hud__hint">{phase === "listening" ? "Go ahead. I’m listening…" : phase === "starting" ? "Getting ready…" : initialInput ? "Ask about this object." : "Ask about what you see, or say “take a note”."}</p>}
+      {messages.slice(-2).map((message,index) => <p className={`voice-hud__caption voice-hud__caption--${message.role}`} key={index}><span>{message.role === "user" ? "You" : "Meta AI"}</span>{message.content}</p>)}
+      {phase === "transcribing" && <p className="voice-hud__hint">Turning your words into text…</p>}
+      {phase === "thinking" && <p className="voice-hud__hint">Thinking…</p>}
+      {error && <p className="voice-hud__error" role="alert">{error}</p>}
+    </div>
+    <footer className="voice-hud__actions">
+      {phase === "listening" && <button onClick={() => void finish(true)}>Finish speaking</button>}
+      {busy && <button onClick={stop}>Stop</button>}
+      {!busy && <button disabled={!voiceReady} onClick={() => { generation.current += 1; running.current = true; setHandsFree(true); void listen(); }}>Speak</button>}
+      {error && retryText && !busy && <button onClick={() => { setError(null); const token = ++generation.current; void answer(retryText,token).catch((cause: Error) => { setPhase("idle"); setError(cause.message); }); }}>Retry</button>}
+    </footer>
+    {(!busy && (initialInput || error)) && <form className="voice-hud__input" onSubmit={event => { event.preventDefault(); void sendTyped(); }}><input aria-label="Ask Spots" placeholder="Type a message…" value={input} onChange={event => setInput(event.target.value)} maxLength={2000}/><button disabled={!ready || !input.trim()}>Ask</button></form>}
+  </section>;
+
   return (
-    <aside className="thread-panel assistant-panel" aria-label="Talk to Spots">
-      <header className="thread-header"><div><p className="eyebrow">YOUR CAMERA COMPANION</p><h2>Talk to Spots</h2>
+    <aside className={`thread-panel assistant-panel ${lens ? "assistant-panel--lens" : ""}`} aria-label={lens ? "Meta AI conversation" : "Talk to Spots"}>
+      <header className="thread-header"><div><p className="eyebrow">{lens ? "SPOTS FOR GLASSES" : "YOUR CAMERA COMPANION"}</p><h2>{lens ? "Meta AI" : "Talk to Spots"}</h2>
         <p>Say “add a comment saying …”, “read past comments”, or “change my last comment to …”.</p></div></header>
-      <div className="assistant-settings">
+      <details className="assistant-options" open={lens ? undefined : true}><summary>Voice & camera settings</summary><div className="assistant-settings">
         <span className="inline-note">{ready ? `Local AI · ${health.assistant_model}${health.llm_parser_enabled ? " · LLM speech parsing" : ""}` : health?.assistant_message ?? "Connecting to local AI…"}</span>
         {object && <span className="inline-note">Looking at: {object.title}</span>}
         <label><input type="checkbox" checked={camera} disabled={busy} onChange={(e) => setCamera(e.target.checked)} /> Include current camera view with each question</label>
@@ -191,17 +218,17 @@ export function AssistantPanel({ health, object, authorId, onSaved }: { health: 
           {recorder.devices.filter((d) => d.deviceId).map((d) => <option key={d.deviceId} value={d.deviceId}>{d.label || "Microphone"}</option>)}
         </select></label>
         <button className="text-button" disabled={busy} onClick={() => { void speakText("Spots is ready. You should hear me through your MacBook speakers.").catch((e: Error) => setError(e.message)); }}>Test speakers</button>
-      </div>
+      </div></details>
       <MemoryRecall object={object} revision={(savedNote?.note.id ?? 0) + memoryRevision} />
       {savedNote && <div className="memory-saved" role="status"><strong>Saved · {savedNote.object.title}</strong><p>{savedNote.note.body}</p><small>Stored on this Mac. Find it again in Saved objects & memories.</small></div>}
       <div className="thread-body assistant-messages" aria-live="polite" ref={messagesRef}>
         {messages.length === 0 && <div className="panel-state">Try “What am I looking at?” then ask a follow-up.<br />Say “take a note” to save a memory. Ordinary questions stay in this chat.</div>}
-        {messages.map((message, index) => <article className={`assistant-message assistant-message--${message.role}`} key={index}><strong>{message.role === "user" ? "You" : "Spots"}</strong><p>{message.content}</p></article>)}
+        {messages.map((message, index) => <article className={`assistant-message assistant-message--${message.role}`} key={index}><strong>{message.role === "user" ? "You" : lens ? "Meta AI" : "Spots"}</strong><p>{message.content}</p></article>)}
         {busy && <p className="assistant-phase" role="status">{({ idle: "", starting: "Opening microphone…", listening: handsFree ? "Listening… pause when you finish your question." : "Listening… press Finish question when ready.", transcribing: "Turning your speech into text…", thinking: "Looking and thinking…", speaking: "Spots is speaking…" })[phase]}</p>}
 
       </div>
       <div className="assistant-controls">
-        {lastContext && <small>{lastContext}</small>}
+        {lastContext && !lens && <small>{lastContext}</small>}
         {awaitingName && <p className="inline-note">Your note is held for this conversation. Tell me the object’s name to finish saving.</p>}
         {awaitingNote && <p className="inline-note">Ready for your note. Keep the object centered and tell me what to remember.</p>}
         {error && <p className="form-error" role="alert">{error}</p>}

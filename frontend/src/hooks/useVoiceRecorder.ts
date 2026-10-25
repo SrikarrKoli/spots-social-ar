@@ -72,9 +72,23 @@ export function useVoiceRecorder(): VoiceRecorder {
     microphoneOwner = owner.current;
     const token = ++attempt.current;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      let permissionTimer: number | undefined;
+      let permissionTimedOut = false;
+      const requestedStream = navigator.mediaDevices.getUserMedia({
         audio: { ...(deviceId ? { deviceId: { exact: deviceId } } : {}), echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      }).then(stream => {
+        if (permissionTimedOut) stream.getTracks().forEach(track => track.stop());
+        return stream;
       });
+      let stream: MediaStream;
+      try {
+        stream = await Promise.race([requestedStream, new Promise<never>((_, reject) => {
+          permissionTimer = window.setTimeout(() => {
+            permissionTimedOut = true;
+            reject(new Error("Microphone access is waiting for browser permission. Allow the microphone for this page, then tap Speak."));
+          }, 12000);
+        })]);
+      } finally { window.clearTimeout(permissionTimer); }
       if (!mounted.current || token !== attempt.current) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -88,7 +102,12 @@ export function useVoiceRecorder(): VoiceRecorder {
       if (onEnd) {
         const context = new AudioContext();
         monitorCleanup.current = () => { void context.close(); monitorCleanup.current = () => undefined; };
-        await context.resume();
+        let resumeTimer: number | undefined;
+        try {
+          await Promise.race([context.resume(), new Promise<never>((_, reject) => {
+            resumeTimer = window.setTimeout(() => reject(new Error("Audio is paused by the browser. Tap Speak to activate the microphone and audio.")), 4000);
+          })]);
+        } finally { window.clearTimeout(resumeTimer); }
         if (!mounted.current || token !== attempt.current) return;
         const source = context.createMediaStreamSource(stream);
         const analyser = context.createAnalyser();
@@ -141,6 +160,6 @@ export function useVoiceRecorder(): VoiceRecorder {
 }
 export function microphoneErrorMessage(error: unknown): string {
   if (error instanceof DOMException && error.name === "NotAllowedError") return "Microphone permission was denied. Allow microphone access for this site and try again.";
-  if (error instanceof Error && error.message.startsWith("Finish the current")) return error.message;
+  if (error instanceof Error && /^(Finish the current|Microphone access is waiting|Audio is paused)/.test(error.message)) return error.message;
   return "The selected microphone could not be started. Reconnect it or choose System default.";
 }

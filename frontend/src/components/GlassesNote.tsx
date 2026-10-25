@@ -93,6 +93,7 @@ export function NoteCard({
   onPosted,
   assistantSignal = 0,
   onAssistantStateChange,
+  onAskAssistant,
 }: {
   object: ObjectSummary;
   thread: ThreadResponse | undefined;
@@ -102,6 +103,7 @@ export function NoteCard({
   onPosted: (confirmation: string) => void;
   assistantSignal?: number;
   onAssistantStateChange?: (state: AssistantState) => void;
+  onAskAssistant?: (prompt: string) => void;
 }) {
   const note = featuredNote(thread, viewer);
   const root = note ? thread?.posts.find((post) => post.id === (note.parent_post_id ?? note.id)) ?? null : null;
@@ -341,7 +343,7 @@ export function NoteCard({
       }}
     >
       <header className="g-card__header">
-        <span className="g-card__place">{PLACE_NAME}</span>
+        <span className="g-card__place">{object.identity_kind === "demo" ? PLACE_NAME : "Spots"}</span>
         <button className="g-card__close" onClick={onClose} aria-label="Close note">
           <Icon name="close" />
         </button>
@@ -423,6 +425,8 @@ export function NoteCard({
       <div className="g-actions">
         {step === "note" && (
           <>
+            {onAskAssistant && <button className="g-action" onClick={() => onAskAssistant(`Read all past comments about ${object.title}`)}><Icon name="notes" /><span>Ask about past notes</span><Icon name="chevronRight" /></button>}
+
             {replyCount > 0 && (
               <button ref={firstActionRef} className="g-action" onClick={() => setStep("thread")}>
                 <Icon name="notes" /> <span>View {replyCount} {replyCount === 1 ? "reply" : "replies"}</span> <Icon name="chevronRight" />
