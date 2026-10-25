@@ -56,3 +56,39 @@ export function mapFrameBox(
     scale: rect.scale,
   };
 }
+
+// Like CSS object-fit: cover with object-position at `focus` (fractions of the overflow).
+export function coverRect(container: Size, media: Size, focus: [number, number] = [0.5, 0.5]): ContainedRect {
+  if (container.width <= 0 || container.height <= 0 || media.width <= 0 || media.height <= 0) {
+    return { x: 0, y: 0, width: 0, height: 0, scale: 0 };
+  }
+  const scale = Math.max(container.width / media.width, container.height / media.height);
+  const width = media.width * scale;
+  const height = media.height * scale;
+  return {
+    x: (container.width - width) * focus[0],
+    y: (container.height - height) * focus[1],
+    width,
+    height,
+    scale,
+  };
+}
+
+// Scales media to `zoom` times its fit-inside size (never beyond cover), placed like object-position at `focus`.
+export function zoomedRect(container: Size, media: Size, zoom: number, focus: [number, number] = [0.5, 0.5]): ContainedRect {
+  if (container.width <= 0 || container.height <= 0 || media.width <= 0 || media.height <= 0) {
+    return { x: 0, y: 0, width: 0, height: 0, scale: 0 };
+  }
+  const fit = Math.min(container.width / media.width, container.height / media.height);
+  const cover = Math.max(container.width / media.width, container.height / media.height);
+  const scale = Math.min(fit * zoom, cover);
+  const width = media.width * scale;
+  const height = media.height * scale;
+  return {
+    x: (container.width - width) * focus[0],
+    y: (container.height - height) * focus[1],
+    width,
+    height,
+    scale,
+  };
+}

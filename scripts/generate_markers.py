@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "markers"
 DICTIONARY = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 OBJECTS = (
-    ("concert-poster", 7, "CONCERT POSTER", "Neon Harbor · Friday night"),
-    ("favorite-book", 23, "FAVORITE BOOK", "The Left Hand of Darkness"),
+    ("concert-poster", 7, "CHICKEN TIKKA MASALA", "Zareen's menu connection"),
+    ("favorite-book", 23, "MADRAS CHICKEN CURRY", "Zareen's menu connection"),
 )
 
 
@@ -48,7 +48,7 @@ def labeled_marker(marker_id: int, title: str, description: str) -> np.ndarray:
     )
     cv2.putText(
         canvas,
-        f"LOCUS OBJECT  /  MARKER #{marker_id}",
+        f"SPOTS MENU  /  MARKER #{marker_id}",
         (80, 712),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.45,
@@ -64,7 +64,7 @@ def make_fixture() -> np.ndarray:
     cv2.rectangle(canvas, (0, 0), (1600, 120), (21, 27, 23), -1)
     cv2.putText(
         canvas,
-        "LOCUS  /  DEVELOPMENT FIXTURE",
+        "SPOTS  /  ZAREEN'S MENU",
         (70, 74),
         cv2.FONT_HERSHEY_SIMPLEX,
         1.05,
@@ -117,7 +117,7 @@ def printable_svg(images: list[np.ndarray]) -> str:
         '<?xml version="1.0" encoding="UTF-8"?>',
         f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{page_width}mm" height="{page_height}mm" viewBox="0 0 {page_width} {page_height}">',
         '<rect width="210" height="297" fill="white"/>',
-        '<text x="14" y="14" font-family="monospace" font-size="4" font-weight="bold">LOCUS · PRINT AT 100% SCALE</text>',
+        '<text x="14" y="14" font-family="monospace" font-size="4" font-weight="bold">SPOTS MENU · PRINT AT 100% SCALE</text>',
     ]
     for index, image in enumerate(images):
         x = 14 + index * 93

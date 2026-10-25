@@ -8,7 +8,7 @@ from backend.tests.conftest import make_test_settings
 
 def post_payload(**overrides):
     payload = {
-        "author_id": "guest",
+        "author_id": "theo",
         "body": "I’m in — doors open at seven.",
         "parent_post_id": None,
         "client_request_id": "test-request-0001",
@@ -20,15 +20,12 @@ def post_payload(**overrides):
 def test_seeded_demo_and_marker_resolution(client: TestClient):
     profiles = client.get("/api/profiles")
     assert profiles.status_code == 200
-    assert {profile["id"] for profile in profiles.json()} == {
-        "maya",
-        "theo",
-        "lina",
-        "guest",
-    }
+    assert {profile["id"] for profile in profiles.json()} == {"maya", "theo"}
     assert {item["id"] for item in client.get("/api/objects").json()} == {
         "concert-poster",
         "favorite-book",
+        "mushroom-bucatini",
+        "pani-puri",
     }
 
     marker = client.get("/api/objects/by-marker/7")
@@ -36,8 +33,8 @@ def test_seeded_demo_and_marker_resolution(client: TestClient):
     assert marker.json()["id"] == "concert-poster"
 
     thread = client.get("/api/objects/concert-poster/posts").json()
-    assert thread["posts"][0]["body"] == "Anyone want to go Friday?"
-    assert thread["posts"][0]["replies"][0]["author"]["id"] == "theo"
+    assert thread["posts"][0]["body"].startswith("Get this with garlic naan")
+    assert thread["posts"][0]["author"]["id"] == "maya"
 
 
 def test_post_persists_across_app_restart(database_path):
@@ -71,7 +68,6 @@ def test_create_is_idempotent(client: TestClient):
 def test_reply_must_match_object_and_top_level(client: TestClient):
     concert = client.get("/api/objects/concert-poster/posts").json()
     concert_parent = concert["posts"][0]
-    concert_reply = concert_parent["replies"][0]
 
     wrong_object = client.post(
         "/api/objects/favorite-book/posts",
@@ -82,11 +78,20 @@ def test_reply_must_match_object_and_top_level(client: TestClient):
     )
     assert wrong_object.status_code == 409
 
+    reply = client.post(
+        "/api/objects/concert-poster/posts",
+        json=post_payload(
+            parent_post_id=concert_parent["id"],
+            client_request_id="test-request-nested-reply",
+        ),
+    )
+    assert reply.status_code == 201
+
     nested = client.post(
         "/api/objects/concert-poster/posts",
         json=post_payload(
-            parent_post_id=concert_reply["id"],
-            client_request_id="test-request-nested-reply",
+            parent_post_id=reply.json()["id"],
+            client_request_id="test-request-actually-nested-reply",
         ),
     )
     assert nested.status_code == 409

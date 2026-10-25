@@ -3,6 +3,8 @@ export interface Profile {
   display_name: string;
   initials: string;
   color: string;
+  // Demo-only portrait; real profiles fall back to initials.
+  photo?: string;
 }
 
 export interface ObjectSummary {

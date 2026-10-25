@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -87,6 +88,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.repository = repository
     app.state.camera = camera
     app.state.transcription = transcription
+    live_subscribers: set[asyncio.Queue[str]] = set()
+
+    async def publish_live_event(event: dict[str, object]) -> None:
+        message = json.dumps(event)
+        for subscriber in tuple(live_subscribers):
+            subscriber.put_nowait(message)
 
     @app.get("/api/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -128,7 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     async def create_post(object_id: str, payload: CreatePostRequest) -> Post:
         try:
-            return await asyncio.to_thread(
+            post = await asyncio.to_thread(
                 repository.create_post,
                 object_id=object_id,
                 author_id=payload.author_id,
@@ -136,10 +143,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 parent_post_id=payload.parent_post_id,
                 client_request_id=payload.client_request_id,
             )
+            await publish_live_event(
+                {
+                    "type": "post.created",
+                    "object_id": object_id,
+                    "post_id": post.id,
+                    "author_id": post.author.id,
+                }
+            )
+            return post
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except InvalidReplyError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get("/api/events")
+    async def live_events() -> StreamingResponse:
+        queue: asyncio.Queue[str] = asyncio.Queue()
+
+        async def stream():
+            live_subscribers.add(queue)
+            try:
+                yield "event: connected\ndata: {}\n\n"
+                while True:
+                    try:
+                        message = await asyncio.wait_for(queue.get(), timeout=15)
+                        yield f"event: update\ndata: {message}\n\n"
+                    except TimeoutError:
+                        yield ": keep-alive\n\n"
+            finally:
+                live_subscribers.discard(queue)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/recognition", response_model=RecognitionResponse)
     async def recognition() -> RecognitionResponse:

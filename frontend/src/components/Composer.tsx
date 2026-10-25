@@ -1,38 +1,34 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { useVoiceRecorder } from "../hooks/useVoiceRecorder";
 import type { LockedTarget, Profile } from "../types";
-
-type Phase = "editing" | "recording" | "transcribing" | "saving";
+import { Avatar } from "./Avatar";
+import { Icon } from "./Icons";
 
 interface Props {
   target: LockedTarget;
   profile: Profile;
   transcriptionConfigured: boolean;
+  startRecording?: boolean;
   onCancel: () => void;
   onSaved: () => void;
-}
-
-function bestRecordingType() {
-  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
-  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
 }
 
 export function Composer({
   target,
   profile,
   transcriptionConfigured,
+  startRecording = false,
   onCancel,
   onSaved,
 }: Props) {
   const [body, setBody] = useState("");
-  const [phase, setPhase] = useState<Phase>("editing");
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasTranscript, setHasTranscript] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const recorder = useVoiceRecorder();
   const requestIdRef = useRef(crypto.randomUUID());
 
   const refreshDevices = async () => {
@@ -41,70 +37,26 @@ export function Composer({
     setDevices(allDevices.filter((device) => device.kind === "audioinput"));
   };
 
-  useEffect(() => {
-    void refreshDevices();
-    return () => streamRef.current?.getTracks().forEach((track) => track.stop());
-  }, []);
-
-  const startRecording = async () => {
+  const record = async () => {
     setError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
-      });
-      streamRef.current = stream;
-      chunksRef.current = [];
-      const mimeType = bestRecordingType();
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      recorderRef.current = recorder;
-      recorder.ondataavailable = (event) => {
-        if (event.data.size) chunksRef.current.push(event.data);
-      };
-      recorder.start();
-      setPhase("recording");
+    if (await recorder.start(deviceId)) {
       setHasTranscript(false);
       await refreshDevices();
-    } catch (recordingError) {
-      setError(
-        recordingError instanceof DOMException && recordingError.name === "NotAllowedError"
-          ? "Microphone permission was denied. Allow access or type your message."
-          : "The selected microphone could not be started.",
-      );
     }
   };
 
   const stopAndTranscribe = async () => {
-    const recorder = recorderRef.current;
-    if (!recorder || recorder.state === "inactive") return;
-    setPhase("transcribing");
-    setError(null);
-
-    const blob = await new Promise<Blob>((resolve) => {
-      recorder.onstop = () => {
-        const recording = new Blob(chunksRef.current, {
-          type: recorder.mimeType || "audio/webm",
-        });
-        streamRef.current?.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-        resolve(recording);
-      };
-      recorder.stop();
-    });
-
-    try {
-      const result = await api.transcribe(blob);
-      setBody(result.text);
+    const text = await recorder.stop();
+    if (text !== null) {
+      setBody(text);
       setHasTranscript(true);
-    } catch (transcriptionError) {
-      setError(
-        transcriptionError instanceof Error
-          ? transcriptionError.message
-          : "Transcription failed. Your message was not published.",
-      );
-    } finally {
-      setPhase("editing");
     }
   };
+
+  useEffect(() => {
+    void refreshDevices();
+    if (startRecording && transcriptionConfigured) void record();
+  }, []);
 
   const publish = async () => {
     const cleaned = body.trim();
@@ -112,7 +64,7 @@ export function Composer({
       setError("Write or record a message before posting.");
       return;
     }
-    setPhase("saving");
+    setSaving(true);
     setError(null);
     try {
       await api.createPost(target.object.id, {
@@ -128,95 +80,79 @@ export function Composer({
           ? `${saveError.message} Your draft is still here.`
           : "Could not save. Your draft is still here.",
       );
-      setPhase("editing");
+      setSaving(false);
     }
   };
 
-  const busy = phase === "saving" || phase === "transcribing";
+  const recording = recorder.state === "recording";
+  const busy = saving || recorder.state === "transcribing";
+  const shownError = error ?? recorder.error;
 
   return (
     <div className="composer" role="dialog" aria-label="Message composer">
-      <div className="composer__lock">
-        <span aria-hidden="true">⌖</span>
-        <div>
-          <small>{target.parentPost ? "REPLY LOCKED TO" : "POSTING TO"}</small>
-          <strong>{target.object.title}</strong>
-          {target.parentPost && (
-            <span>Replying to {target.parentPost.author.display_name}</span>
+      <div className="composer__target">
+        <Avatar profile={profile} size="sm" />
+        <span>
+          {target.parentPost ? (
+            <>Replying to <strong>{target.parentPost.author.display_name}</strong></>
+          ) : (
+            <>New note on <strong>{target.object.title}</strong></>
           )}
-        </div>
+        </span>
+        <button className="icon-button" onClick={onCancel} disabled={busy} aria-label="Cancel">
+          <Icon name="close" />
+        </button>
       </div>
 
-      {target.parentPost && (
-        <blockquote>“{target.parentPost.body}”</blockquote>
-      )}
+      {target.parentPost && <blockquote>“{target.parentPost.body}”</blockquote>}
 
-      <label className="field-label" htmlFor="message-body">
-        {hasTranscript ? "Review transcript" : "Your message"}
-      </label>
       <textarea
         id="message-body"
         value={body}
         maxLength={500}
-        disabled={busy || phase === "recording"}
+        disabled={busy || recording}
         onChange={(event) => setBody(event.target.value)}
-        placeholder="Say something worth finding…"
+        placeholder={recording ? "Listening…" : hasTranscript ? "Review your transcript…" : "Add a note…"}
+        aria-label={hasTranscript ? "Review transcript" : "Your message"}
         autoFocus
       />
-      <div className="character-count">{body.length}/500</div>
 
-      <div className="audio-row">
-        {devices.length > 0 && (
-          <label className="device-select">
-            <span>MIC</span>
-            <select value={deviceId} onChange={(event) => setDeviceId(event.target.value)}>
-              <option value="">System default</option>
-              {devices.map((device, index) => (
-                <option key={device.deviceId || index} value={device.deviceId}>
-                  {device.label || `Microphone ${index + 1}`}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-
-        {phase === "recording" ? (
-          <button className="record-button is-recording" onClick={stopAndTranscribe}>
+      <div className="composer__bar">
+        {recording ? (
+          <button className="pill-button pill-button--recording" onClick={stopAndTranscribe}>
             <span className="record-square" /> Stop & transcribe
           </button>
         ) : (
           <button
-            className="record-button"
-            onClick={startRecording}
+            className="pill-button"
+            onClick={record}
             disabled={busy || !transcriptionConfigured}
-            title={
-              transcriptionConfigured
-                ? "Record a message"
-                : "Configure a transcription provider to record"
-            }
+            title={transcriptionConfigured ? "Record a message" : "Configure a transcription provider to record"}
           >
-            <span className="mic-icon" aria-hidden="true">●</span>
-            {hasTranscript ? "Retry recording" : "Record instead"}
+            <Icon name="mic" /> {hasTranscript ? "Retry" : "Voice"}
           </button>
         )}
+        {devices.length > 1 && (
+          <select className="device-select" value={deviceId} onChange={(event) => setDeviceId(event.target.value)} aria-label="Microphone">
+            <option value="">Default mic</option>
+            {devices.map((device, index) => (
+              <option key={device.deviceId || index} value={device.deviceId}>
+                {device.label || `Microphone ${index + 1}`}
+              </option>
+            ))}
+          </select>
+        )}
+        <span className="character-count">{body.length}/500</span>
+        <button className="button button--primary" onClick={publish} disabled={busy || recording || !body.trim()}>
+          {saving ? "Posting…" : target.parentPost ? "Reply" : "Post"}
+        </button>
       </div>
 
-      {!transcriptionConfigured && (
-        <p className="inline-note">Speech transcription is unconfigured. Typed posting works normally.</p>
-      )}
-      {phase === "transcribing" && (
+      {!transcriptionConfigured && <p className="inline-note">Speech transcription is unconfigured. Typed posting works normally.</p>}
+      {recorder.state === "transcribing" && (
         <div className="progress-message"><span className="spinner" /> Transcribing your recording…</div>
       )}
-      {error && <p className="form-error" role="alert">{error}</p>}
-
-      <div className="composer__actions">
-        <button className="button button--ghost" onClick={onCancel} disabled={busy || phase === "recording"}>
-          Cancel
-        </button>
-        <button className="button button--primary" onClick={publish} disabled={busy || phase === "recording" || !body.trim()}>
-          {phase === "saving" ? "Posting…" : target.parentPost ? "Post reply" : "Post"}
-        </button>
-      </div>
+      {shownError && <p className="form-error" role="alert">{shownError}</p>}
     </div>
   );
 }

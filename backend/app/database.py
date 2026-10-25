@@ -75,24 +75,34 @@ class Database:
 
 
 USERS = (
-    ("maya", "Maya Chen", "MC", "#F26B4C"),
-    ("theo", "Theo Brooks", "TB", "#4F7CAC"),
-    ("lina", "Lina Ortiz", "LO", "#8B6F9E"),
-    ("guest", "Guest", "G", "#68706F"),
+    ("maya", "Vishal Rajkumar", "VR", "#E76F51"),
+    ("theo", "Aneesh Dhulipalla", "AD", "#457B9D"),
 )
 
 OBJECTS = (
     (
         "concert-poster",
         7,
-        "Concert poster",
-        "Neon Harbor at The Lantern — Friday night.",
+        "Chicken Tikka Masala",
+        "Grilled boneless chicken in an onion and tomato-cream curry.",
     ),
     (
         "favorite-book",
         23,
-        "Favorite book",
-        "A shared copy of The Left Hand of Darkness.",
+        "Madras Chicken Curry",
+        "Charcoal-grilled chicken, carrots, and potatoes in a Madras curry.",
+    ),
+    (
+        "mushroom-bucatini",
+        31,
+        "Beef Chapli Kabab Sizzler",
+        "Distinctively spiced, handmade local beef kabab.",
+    ),
+    (
+        "pani-puri",
+        12,
+        "Pani Puri",
+        "Crispy puris filled with potatoes, chickpeas, and chutneys.",
     ),
 )
 
@@ -101,33 +111,33 @@ SEED_POSTS = (
         "concert-question",
         "concert-poster",
         "maya",
-        "Anyone want to go Friday?",
+        "Get this with garlic naan. Smoky, not too sweet.",
         "2026-10-24T18:00:00+00:00",
         None,
     ),
     (
-        "concert-reply",
-        "concert-poster",
-        "theo",
-        "Yes — I can grab the tickets.",
-        "2026-10-24T18:02:00+00:00",
-        "concert-question",
-    ),
-    (
         "book-recommendation",
         "favorite-book",
-        "lina",
-        "The world-building is incredible. Start with chapter two if the opening feels slow.",
+        "maya",
+        "Madras curry has a slow-building heat. Ask for medium and get rice and naan with it.",
         "2026-10-24T18:05:00+00:00",
         None,
     ),
     (
-        "book-reply",
-        "favorite-book",
+        "bucatini-recommendation",
+        "mushroom-bucatini",
         "maya",
-        "That chapter is what hooked me too.",
+        "Best thing on the menu. Comes out sizzling, so order one for the table.",
         "2026-10-24T18:07:00+00:00",
-        "book-recommendation",
+        None,
+    ),
+    (
+        "pani-puri-recommendation",
+        "pani-puri",
+        "maya",
+        "The pani puri here is so good. Eat each one in one bite so the water doesn't spill.",
+        "2026-10-24T18:03:00+00:00",
+        None,
     ),
 )
 
@@ -138,6 +148,16 @@ def seed_demo(database: Database, *, reset: bool = False) -> None:
         database.reset()
 
     with database.connect() as connection:
+        active_seed_keys = tuple(post[0] for post in SEED_POSTS)
+        placeholders = ", ".join("?" for _ in active_seed_keys)
+        connection.execute(
+            f"DELETE FROM posts WHERE seed_key IS NOT NULL AND seed_key NOT IN ({placeholders})",
+            active_seed_keys,
+        )
+        connection.execute(
+            "DELETE FROM posts WHERE client_request_id = ?",
+            ("acceptance-jordan-ramen-reply-v1",),
+        )
         connection.executemany(
             """
             INSERT INTO users(id, display_name, initials, color)
@@ -169,7 +189,12 @@ def seed_demo(database: Database, *, reset: bool = False) -> None:
                 INSERT INTO posts(
                     object_id, author_id, body, created_at, parent_post_id, seed_key
                 ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(seed_key) DO NOTHING
+                ON CONFLICT(seed_key) DO UPDATE SET
+                    object_id = excluded.object_id,
+                    author_id = excluded.author_id,
+                    body = excluded.body,
+                    created_at = excluded.created_at,
+                    parent_post_id = excluded.parent_post_id
                 """,
                 (object_id, author_id, body, created_at, parent_id, seed_key),
             )
@@ -178,3 +203,11 @@ def seed_demo(database: Database, *, reset: bool = False) -> None:
             ).fetchone()
             if row is not None:
                 seed_ids[seed_key] = int(row["id"])
+
+        connection.execute(
+            """
+            DELETE FROM users
+            WHERE id NOT IN ('maya', 'theo')
+              AND NOT EXISTS (SELECT 1 FROM posts WHERE posts.author_id = users.id)
+            """
+        )
