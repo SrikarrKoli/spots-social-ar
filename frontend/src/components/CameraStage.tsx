@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { mapFramePoint, zoomedRect } from "../geometry";
 import { anchorFor, DEMO_FOCUS, DEMO_IMAGE, DEMO_IMAGE_SIZE, DEMO_ZOOM, FEATURED_MARKER, PINNED_MARKERS, PLACE_NAME } from "../scene";
 import { noteCount } from "../threadUtils";
@@ -230,7 +230,7 @@ export function CameraStage({
                 }}
               />
             ))}
-            {cardOpen && !assistantOpen && <div className="g-card-slot" style={cardStyle}>{card}</div>}
+            {cardOpen && !assistantOpen && <div className={`g-card-slot ${mode === "live" ? "g-card-slot--tracked" : ""}`} style={{ ...cardStyle, "--tracked-left": `${cardStyle?.left ?? 16}px`, "--tracked-top": `${cardStyle?.top ?? 64}px` } as CSSProperties}>{card}</div>}
           </div>
         )}
 

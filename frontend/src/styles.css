@@ -874,3 +874,9 @@ svg { display: block; }
 @keyframes voice-appear { from { opacity:0; transform:translate(-50%,12px) scale(.97); } to { opacity:1; transform:translate(-50%,0) scale(1); } }
 @keyframes voice-breathe { 50% { box-shadow:0 0 22px #1877f2aa; transform:scale(1.2); } }
 @media(prefers-reduced-motion:reduce) { .voice-hud,.voice-hud__orb,.muse-control * { animation:none !important; } }
+
+/* In live view the note card is positioned from the tracked object, not a margin. */
+.camera-stage--live .g-card-slot--tracked { left:auto !important; top:auto !important; bottom:auto; width:300px !important; max-height:min(420px,calc(100% - 96px)); animation:none; }
+.camera-stage--live .g-card-slot--tracked[style] { left:var(--tracked-left) !important; top:var(--tracked-top) !important; }
+.g-marker { transition:left 90ms linear,top 90ms linear; }
+@media(prefers-reduced-motion:reduce) { .g-marker { transition:none; } }

@@ -14,6 +14,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from .object_tracking import ObjectMotionTracker
 from .recognition import ArucoRecognizer, Recognizer, detect_markers, marker_dictionary
 
 __all__ = ["CameraService", "EnrollmentCapture", "detect_markers", "marker_dictionary", "select_enrollment_views"]
@@ -142,6 +143,7 @@ class CameraService:
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._recognizer_lock = threading.Lock()
+        self._motion = ObjectMotionTracker()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._capture: cv2.VideoCapture | None = None
@@ -302,7 +304,12 @@ class CameraService:
         if remove is None:
             return False
         with self._recognizer_lock:
-            return bool(remove(identity_key))
+            self._motion.remove(identity_key)
+            removed = bool(remove(identity_key))
+        with self._lock:
+            self._tracks.pop(identity_key, None)
+            self._user_confirmed.discard(identity_key)
+        return removed
 
     # -- live-feed enrolment (Phase 2) -----------------------------------
 
@@ -700,6 +707,7 @@ class CameraService:
             analysis = frame
         with self._recognizer_lock:
             detections = self.recognizer.detect(analysis)
+            detections = self._motion.update(analysis, detections, now_monotonic)
         if scale != 1.0:
             for detection in detections:
                 detection.corners = np.asarray(detection.corners, dtype=float) / scale
@@ -715,7 +723,7 @@ class CameraService:
                 tier = getattr(detection, "tier", "high")
                 previous = self._tracks.get(detection.identity_key)
                 if previous is not None:
-                    smoothed = previous.corners * 0.6 + corners * 0.4
+                    smoothed = corners  # Motion follows this frame, not a lagging old location.
                     hits = previous.hits + 1
                     # Tier follows the current frame's measurement, so a
                     # track that drops to provisional stops attaching
@@ -740,6 +748,11 @@ class CameraService:
                     tier=tier,
                 )
 
+            visible = {item.identity_key for item in detections}
+            for identity in list(self._tracks):
+                if identity not in visible:
+                    del self._tracks[identity]
+                    self._user_confirmed.discard(identity)
             self._expire_tracks(now_monotonic)
             self._frame_width = width
             self._frame_height = height
@@ -759,6 +772,8 @@ class CameraService:
                     self._encoded_monotonic = now_monotonic
 
         for detection in detections:
+            if "+optical-flow" in detection.method:
+                continue  # Never train identity references on motion predictions.
             self._maybe_bank_view(detection.identity_key, frame, detection, now_monotonic)
 
     def _expire_tracks(self, now_monotonic: float) -> None:
@@ -773,10 +788,11 @@ class CameraService:
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
-            self._expire_tracks(time.monotonic())
+            now = time.monotonic()
+            self._expire_tracks(now)
             detections = []
             for identity_key, track in self._tracks.items():
-                if not track.confirmed:
+                if not track.confirmed or self._status != "ready" or now - track.seen_monotonic > .8:
                     continue
                 corners = track.corners.tolist()
                 center = track.corners.mean(axis=0).tolist()
