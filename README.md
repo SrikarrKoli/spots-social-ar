@@ -9,6 +9,10 @@ message, review it, and publish it for another browser session to see.
 The MVP is implemented and runnable. The sections below document the product,
 architecture, setup, verification, and three-minute demo flow.
 
+## HackTX presentation
+
+[Spots — HackTX 2026 pitch deck](docs/presentations/Spots-HackTX-2026.pptx)
+
 ## Quick start
 
 Prerequisites: Python 3.11, Node 18+, `uv`, a webcam for hardware mode, and a
