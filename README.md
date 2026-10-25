@@ -15,6 +15,10 @@ separate conversations, and a conversation follows its object when it moves.
 The MVP is implemented and runnable. The sections below document the product,
 architecture, setup, verification, and three-minute demo flow.
 
+## HackTX presentation
+
+[Spots — HackTX 2026 pitch deck](docs/presentations/Spots-HackTX-2026.pptx)
+
 ## Quick start
 
 Prerequisites: Python 3.11, Node 24+, `uv`, a webcam for hardware mode, and a
