@@ -12,6 +12,20 @@ Last updated: 2026-10-24
 > (pitch) version" in the README. The original marker-based spec follows as
 > historical context.
 
+> **Amendment (voice controls):** Browser push-to-talk now uses the selected
+> webcam/glasses audio input and the existing completed-file transcription
+> endpoint. A deterministic frontend command layer supports reviewed comment
+> posting, thread navigation/replies, live enrolment, provisional confirmation,
+> and browser read-aloud. Speech never publishes without an explicit “post it”
+> or Post-button confirmation; ambiguous object/author/recognition matches do
+> nothing. Wake-word listening remains a dependency-gated stretch goal.
+
+> **Amendment (local transcription):** `faster-whisper` is an approved
+> alternative to the cloud transcription adapter. It loads one configurable
+> Whisper model for the backend process, performs CPU inference away from the
+> async event loop, and preserves the existing text-only transcription API.
+> The demo default is the already-cached `medium` model with CPU `int8`.
+
 ## Context
 
 Build the smallest reliable social network attached to physical objects. A
@@ -40,7 +54,9 @@ pause after reviewing the repository README plan.
 - MJPEG video plus timestamped recognition JSON.
 - Letterbox-aware overlays, smoothing, expiry, deterministic selection.
 - Profiles, object threads, typed/audio composer, errors, and empty states.
+- Push-to-talk voice commands, shared microphone selection, and browser TTS.
 - OpenAI completed-file transcription adapter plus explicit disabled mode.
+- Local Faster Whisper completed-file transcription with no API key.
 - Idempotent seed, explicit reset, generated markers, tests, and demo docs.
 
 ### Excluded
@@ -48,7 +64,7 @@ pause after reviewing the repository README plan.
 - Authentication, follows, likes, DMs, signup, general object recognition,
   arbitrary registration, 3D mapping, native apps, or nested replies.
 - Unverified Meta Muse APIs and simulated/canned transcription.
-- Optional natural-language intent parsing unless all core work is complete.
+- Always-listening wake words and AI/free-form intent interpretation.
 
 ## Proposed Design and File Changes
 
@@ -69,15 +85,17 @@ pause after reviewing the repository README plan.
 - [x] Validated/idempotent typed posts and replies
 - [x] React camera, overlays, profiles, thread, and polling
 - [x] Locked-target typed/audio composer and transcript review
+- [x] Deterministic voice commands, explicit voice-post confirmation, and TTS
 - [x] OpenAI/disabled transcription provider adapter
+- [x] Faster Whisper provider, configuration, regression tests, and docs
 - [x] Printable marker assets and real-detection fixture
 - [x] Backend and frontend automated checks
 - [x] Live fixture and multi-client API verification
 - [x] Documentation and handoff
 
 Interactive browser inspection was attempted but the local browser-control
-surface was unavailable in this session. Physical camera, microphone permission,
-and live provider credentials remain environment-dependent verification items.
+surface was unavailable in this session. Physical camera and microphone
+permission remain environment-dependent verification items.
 
 ## Edge Cases and Risks
 
@@ -87,6 +105,8 @@ and live provider credentials remain environment-dependent verification items.
 - Cross-object replies and replies-to-replies must be rejected transactionally.
 - Save failures retain the draft; repeated client requests are idempotent.
 - Provider errors are explicit and never represented as successful transcript.
+- Local model load/inference failures must be explicit; empty output must never
+  be treated as a successful transcript, and CPU work must not block FastAPI.
 
 ## Verification Plan
 

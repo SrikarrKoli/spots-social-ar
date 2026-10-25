@@ -59,6 +59,10 @@ class Database:
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Journal mode is persistent database state. Setting it once avoids a
+        # write-oriented PRAGMA on every short-lived read connection.
+        with sqlite3.connect(self.path, timeout=5) as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             # Migrate pre-markerless databases in place.
@@ -81,6 +85,47 @@ class Database:
             connection.execute(
                 "UPDATE objects SET identity_key = id WHERE identity_key IS NULL"
             )
+            # Pre-markerless databases declared marker_id NOT NULL, which
+            # rejects markerless enrolment. SQLite cannot relax a column
+            # constraint in place, so rebuild the table without it.
+            marker_info = next(
+                (
+                    row
+                    for row in connection.execute("PRAGMA table_info(objects)")
+                    if row["name"] == "marker_id"
+                ),
+                None,
+            )
+            if marker_info is not None and int(marker_info["notnull"]) == 1:
+                connection.execute("PRAGMA foreign_keys = OFF")
+                connection.execute(
+                    """
+                    CREATE TABLE objects_migrated (
+                        id TEXT PRIMARY KEY,
+                        marker_id INTEGER UNIQUE,
+                        identity_key TEXT,
+                        identity_kind TEXT NOT NULL DEFAULT 'instance',
+                        reference_path TEXT,
+                        title TEXT NOT NULL,
+                        description TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO objects_migrated(
+                        id, marker_id, identity_key, identity_kind,
+                        reference_path, title, description
+                    )
+                    SELECT id, marker_id, identity_key, identity_kind,
+                           reference_path, title, description FROM objects
+                    """
+                )
+                connection.execute("DROP TABLE objects")
+                connection.execute(
+                    "ALTER TABLE objects_migrated RENAME TO objects"
+                )
+                connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_objects_identity_key "
                 "ON objects(identity_key)"
@@ -91,7 +136,6 @@ class Database:
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA busy_timeout = 5000")
         try:
             yield connection

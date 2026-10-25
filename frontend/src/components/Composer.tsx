@@ -1,26 +1,39 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { microphoneErrorMessage, useVoiceRecorder } from "../hooks/useVoiceRecorder";
+import { stopSpeaking } from "../speech";
 import type { LockedTarget, Profile } from "../types";
 
 type Phase = "editing" | "recording" | "transcribing" | "saving";
+
+export interface ExternalTranscript {
+  text: string;
+  nonce: number;
+}
+
+export interface VoiceDraftAction {
+  type: "post" | "cancel" | "retry";
+  nonce: number;
+}
 
 interface Props {
   target: LockedTarget;
   profile: Profile;
   transcriptionConfigured: boolean;
+  externalTranscript?: ExternalTranscript | null;
+  voiceAction?: VoiceDraftAction | null;
+  onReviewChange?: (reviewing: boolean) => void;
   onCancel: () => void;
   onSaved: () => void;
-}
-
-function bestRecordingType() {
-  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
-  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
 }
 
 export function Composer({
   target,
   profile,
   transcriptionConfigured,
+  externalTranscript = null,
+  voiceAction = null,
+  onReviewChange,
   onCancel,
   onSaved,
 }: Props) {
@@ -28,70 +41,63 @@ export function Composer({
   const [phase, setPhase] = useState<Phase>("editing");
   const [error, setError] = useState<string | null>(null);
   const [hasTranscript, setHasTranscript] = useState(false);
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [deviceId, setDeviceId] = useState("");
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const recorder = useVoiceRecorder();
   const requestIdRef = useRef(crypto.randomUUID());
+  const lastTranscriptNonce = useRef(0);
+  const lastActionNonce = useRef(0);
 
-  const refreshDevices = async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) return;
-    const allDevices = await navigator.mediaDevices.enumerateDevices();
-    setDevices(allDevices.filter((device) => device.kind === "audioinput"));
-  };
-
+  // A transcript dictated through the global push-to-talk control lands in
+  // this composer, locked to the target captured when it was opened.
   useEffect(() => {
-    void refreshDevices();
-    return () => streamRef.current?.getTracks().forEach((track) => track.stop());
-  }, []);
+    if (!externalTranscript || externalTranscript.nonce === lastTranscriptNonce.current) return;
+    lastTranscriptNonce.current = externalTranscript.nonce;
+    setBody(externalTranscript.text);
+    setHasTranscript(true);
+    setError(null);
+  }, [externalTranscript]);
+
+  const publishRef = useRef<() => Promise<void>>(async () => undefined);
+
+  // Voice-confirm: "post it" / "cancel" / "retry" from the global control
+  // act on this draft. They can never change the locked target.
+  useEffect(() => {
+    if (!voiceAction || voiceAction.nonce === lastActionNonce.current) return;
+    lastActionNonce.current = voiceAction.nonce;
+    if (voiceAction.type === "post") {
+      void publishRef.current();
+    } else if (voiceAction.type === "cancel") {
+      onCancel();
+    } else {
+      setBody("");
+      setHasTranscript(false);
+      setError(null);
+    }
+  }, [voiceAction, onCancel]);
+
+  const reviewing = hasTranscript && phase === "editing" && body.trim().length > 0;
+  useEffect(() => {
+    onReviewChange?.(reviewing);
+  }, [reviewing, onReviewChange]);
+  useEffect(() => () => onReviewChange?.(false), [onReviewChange]);
 
   const startRecording = async () => {
     setError(null);
+    stopSpeaking();
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
-      });
-      streamRef.current = stream;
-      chunksRef.current = [];
-      const mimeType = bestRecordingType();
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      recorderRef.current = recorder;
-      recorder.ondataavailable = (event) => {
-        if (event.data.size) chunksRef.current.push(event.data);
-      };
-      recorder.start();
+      await recorder.start();
       setPhase("recording");
       setHasTranscript(false);
-      await refreshDevices();
     } catch (recordingError) {
-      setError(
-        recordingError instanceof DOMException && recordingError.name === "NotAllowedError"
-          ? "Microphone permission was denied. Allow access or type your message."
-          : "The selected microphone could not be started.",
-      );
+      setError(microphoneErrorMessage(recordingError));
     }
   };
 
   const stopAndTranscribe = async () => {
-    const recorder = recorderRef.current;
-    if (!recorder || recorder.state === "inactive") return;
+    if (!recorder.recording) return;
     setPhase("transcribing");
     setError(null);
-
-    const blob = await new Promise<Blob>((resolve) => {
-      recorder.onstop = () => {
-        const recording = new Blob(chunksRef.current, {
-          type: recorder.mimeType || "audio/webm",
-        });
-        streamRef.current?.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-        resolve(recording);
-      };
-      recorder.stop();
-    });
-
     try {
+      const blob = await recorder.stop();
       const result = await api.transcribe(blob);
       setBody(result.text);
       setHasTranscript(true);
@@ -131,6 +137,7 @@ export function Composer({
       setPhase("editing");
     }
   };
+  publishRef.current = publish;
 
   const busy = phase === "saving" || phase === "transcribing";
 
@@ -166,12 +173,12 @@ export function Composer({
       <div className="character-count">{body.length}/500</div>
 
       <div className="audio-row">
-        {devices.length > 0 && (
+        {recorder.devices.length > 0 && (
           <label className="device-select">
             <span>MIC</span>
-            <select value={deviceId} onChange={(event) => setDeviceId(event.target.value)}>
+            <select value={recorder.deviceId} onChange={(event) => recorder.setDeviceId(event.target.value)}>
               <option value="">System default</option>
-              {devices.map((device, index) => (
+              {recorder.devices.map((device, index) => (
                 <option key={device.deviceId || index} value={device.deviceId}>
                   {device.label || `Microphone ${index + 1}`}
                 </option>
@@ -181,13 +188,13 @@ export function Composer({
         )}
 
         {phase === "recording" ? (
-          <button className="record-button is-recording" onClick={stopAndTranscribe}>
+          <button className="record-button is-recording" onClick={() => void stopAndTranscribe()}>
             <span className="record-square" /> Stop & transcribe
           </button>
         ) : (
           <button
             className="record-button"
-            onClick={startRecording}
+            onClick={() => void startRecording()}
             disabled={busy || !transcriptionConfigured}
             title={
               transcriptionConfigured
@@ -204,6 +211,11 @@ export function Composer({
       {!transcriptionConfigured && (
         <p className="inline-note">Speech transcription is unconfigured. Typed posting works normally.</p>
       )}
+      {reviewing && (
+        <p className="inline-note">
+          Review it, then press Post — or push-to-talk and say “post it”, “retry”, or “cancel”.
+        </p>
+      )}
       {phase === "transcribing" && (
         <div className="progress-message"><span className="spinner" /> Transcribing your recording…</div>
       )}
@@ -213,7 +225,7 @@ export function Composer({
         <button className="button button--ghost" onClick={onCancel} disabled={busy || phase === "recording"}>
           Cancel
         </button>
-        <button className="button button--primary" onClick={publish} disabled={busy || phase === "recording" || !body.trim()}>
+        <button className="button button--primary" onClick={() => void publish()} disabled={busy || phase === "recording" || !body.trim()}>
           {phase === "saving" ? "Posting…" : target.parentPost ? "Post reply" : "Post"}
         </button>
       </div>

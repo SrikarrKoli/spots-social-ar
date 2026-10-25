@@ -15,6 +15,7 @@ export function usePolling(
     let controller: AbortController | undefined;
 
     const poll = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
       controller = new AbortController();
       try {
         await callbackRef.current(controller.signal);
@@ -26,11 +27,26 @@ export function usePolling(
       if (!disposed) timeout = window.setTimeout(poll, intervalMs);
     };
 
+    const onVisibilityChange = () => {
+      if (disposed || typeof document === "undefined") return;
+      if (timeout) {
+        window.clearTimeout(timeout);
+        timeout = undefined;
+      }
+      if (document.hidden) {
+        controller?.abort();
+      } else {
+        void poll();
+      }
+    };
+
     void poll();
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       disposed = true;
       if (timeout) window.clearTimeout(timeout);
       controller?.abort();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [enabled, intervalMs]);
 }

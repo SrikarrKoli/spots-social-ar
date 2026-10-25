@@ -1,18 +1,30 @@
-import { useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { lockTarget } from "../target";
-import type { LockedTarget, ObjectSummary, Post, Profile, ThreadResponse } from "../types";
+import type { Detection, LiveScan, LockedTarget, ObjectSummary, Post, Profile, ThreadResponse } from "../types";
+import { voiceModeForState, type VoiceIntent } from "../voiceCommands";
+import { stopSpeaking } from "../speech";
 import { usePolling } from "../hooks/usePolling";
 import { Avatar } from "./Avatar";
-import { Composer } from "./Composer";
+import { Composer, type ExternalTranscript, type VoiceDraftAction } from "./Composer";
+import { VoiceControl } from "./VoiceControl";
 
 interface Props {
   object: ObjectSummary | null;
   availableObjects: ObjectSummary[];
   onSelectObject: (object: ObjectSummary) => void;
   onObjectEnrolled?: (object: ObjectSummary) => void;
+  onEnrollmentActiveChange?: (active: boolean) => void;
+  showImproveHint?: boolean;
+  provisionalDetections?: Detection[];
+  onConfirmProvisional?: (identityKey: string) => void;
   profile: Profile | null;
   transcriptionConfigured: boolean;
+}
+
+export interface EnrolVoiceRequest {
+  title: string;
+  nonce: number;
 }
 
 function timeLabel(value: string) {
@@ -54,13 +66,119 @@ function Message({ post, onReply }: { post: Post; onReply: (post: Post) => void 
   );
 }
 
-function EnrollObject({ onEnrolled }: { onEnrolled: (object: ObjectSummary) => void }) {
+function EnrollObject({
+  onEnrolled,
+  onEnrollmentActiveChange,
+  enrolRequest = null,
+  onEnrolRequestHandled,
+}: {
+  onEnrolled: (object: ObjectSummary) => void;
+  onEnrollmentActiveChange?: (active: boolean) => void;
+  enrolRequest?: EnrolVoiceRequest | null;
+  onEnrolRequestHandled?: () => void;
+}) {
   const [title, setTitle] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [state, setState] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const [scan, setScan] = useState<LiveScan | null>(null);
 
-  async function submit() {
+  // Scanning *and* reviewing both suppress recognition auto-open and
+  // keep the centre guide visible.
+  useEffect(() => {
+    onEnrollmentActiveChange?.(busy || scan !== null);
+  }, [busy, scan, onEnrollmentActiveChange]);
+  useEffect(
+    () => () => onEnrollmentActiveChange?.(false),
+    [onEnrollmentActiveChange],
+  );
+
+  async function runCountdown<T>(action: () => Promise<T>): Promise<T> {
+    setBusy(true);
+    const endsAt = Date.now() + 4000;
+    setSecondsLeft(4);
+    const timer = window.setInterval(() => {
+      setSecondsLeft(Math.max(0, (endsAt - Date.now()) / 1000));
+    }, 100);
+    try {
+      return await action();
+    } finally {
+      window.clearInterval(timer);
+      setSecondsLeft(null);
+      setBusy(false);
+    }
+  }
+
+  async function startScan() {
+    setState("Look at the object — keep it inside the guide box and slowly turn it…");
+    try {
+      const result = await runCountdown(() => api.scanLive());
+      setScan(result);
+      setState(
+        `Captured ${result.captured_views.length} view(s) from ${result.diagnostics.frames_sampled} frames. ` +
+          "Check the crops are your object — scan more angles or save.",
+      );
+    } catch (error) {
+      setState(error instanceof Error ? error.message : "Scan failed.");
+    }
+  }
+
+  // Voice enrolment: "enrol this as <name>" prefills the spoken name and
+  // starts the same 4s scan. Saving still needs the crops review + Save.
+  const lastEnrolNonce = useRef(0);
+  useEffect(() => {
+    if (!enrolRequest || enrolRequest.nonce === lastEnrolNonce.current) return;
+    lastEnrolNonce.current = enrolRequest.nonce;
+    setTitle(enrolRequest.title);
+    onEnrolRequestHandled?.();
+    void startScan();
+    // startScan is stable enough for this trigger; nonce guards re-runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enrolRequest]);
+
+  async function scanMore() {
+    if (!scan) return;
+    setState("Turn the object to a new angle and keep it in the guide box…");
+    try {
+      const result = await runCountdown(() => api.scanMore(scan.scan_id));
+      setScan(result);
+      setState(
+        `Now ${result.captured_views.length} view(s) total (${result.diagnostics.frames_sampled} frames sampled).`,
+      );
+    } catch (error) {
+      setState(error instanceof Error ? error.message : "Scan failed.");
+    }
+  }
+
+  async function saveScan() {
+    if (!scan || !title.trim()) return;
+    setBusy(true);
+    try {
+      const created = await api.enrollLive(scan.scan_id, title.trim(), "");
+      setScan(null);
+      setTitle("");
+      setState(null);
+      onEnrolled(created);
+    } catch (error) {
+      setState(error instanceof Error ? error.message : "Could not save this object.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function discardScan() {
+    if (!scan) return;
+    try {
+      await api.discardScan(scan.scan_id);
+      setState("Scan discarded — nothing was saved.");
+    } catch {
+      setState("Scan discarded locally — nothing was saved.");
+    }
+    setScan(null);
+  }
+
+  async function submitUpload() {
     if (!title.trim() || !image) return;
     setBusy(true);
     setState(null);
@@ -79,32 +197,185 @@ function EnrollObject({ onEnrolled }: { onEnrolled: (object: ObjectSummary) => v
 
   return (
     <div className="thread-picker">
-      <span>ENROL A NEW OBJECT (NO MARKER)</span>
+      <span>CREATE A NEW OBJECT — BY LOOKING (NO MARKER)</span>
       <input
         aria-label="Object name"
-        placeholder="e.g. Blue mug"
+        placeholder="e.g. My black bottle"
         value={title}
         onChange={(event) => setTitle(event.target.value)}
       />
-      <input
-        aria-label="Photo of the object"
-        type="file"
-        accept="image/*"
-        onChange={(event) => setImage(event.target.files?.[0] ?? null)}
-      />
-      <button disabled={busy || !title.trim() || !image} onClick={() => void submit()}>
-        {busy ? "Enrolling…" : "Enrol from this photo"}
-      </button>
-      {state && <small>{state}</small>}
+      {!scan ? (
+        <button disabled={busy} onClick={() => void startScan()}>
+          {busy
+            ? `Scanning — keep looking… ${secondsLeft !== null ? secondsLeft.toFixed(1) : ""}s`
+            : "Scan the object (4s)"}
+        </button>
+      ) : (
+        <>
+          <button disabled={busy || !title.trim()} onClick={() => void saveScan()}>
+            {busy ? "Saving…" : `Save “${title.trim() || "object"}” and open its thread`}
+          </button>
+          <button disabled={busy} onClick={() => void scanMore()}>
+            {busy
+              ? `Scanning — keep looking… ${secondsLeft !== null ? secondsLeft.toFixed(1) : ""}s`
+              : "Scan more views (new angle)"}
+          </button>
+          <button disabled={busy} onClick={() => void discardScan()}>
+            Discard scan
+          </button>
+        </>
+      )}
+      <small>Just look at the object through the glasses and slowly turn it.</small>
+      {state && <small className="enroll-state" role="status">{state}</small>}
+      {scan && (
+        <div className="enrolled-views">
+          <span>CAPTURED VIEWS — IS THIS YOUR OBJECT?</span>
+          <div className="enrolled-views__grid">
+            {scan.captured_views.map((view, index) => (
+              <img
+                key={index}
+                src={`data:image/jpeg;base64,${view}`}
+                alt={`Captured view ${index + 1} of the new object`}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+      <details>
+        <summary>Dev/test only: enrol from a photo file</summary>
+        <input
+          aria-label="Photo of the object"
+          type="file"
+          accept="image/*"
+          onChange={(event) => setImage(event.target.files?.[0] ?? null)}
+        />
+        <button disabled={busy || !title.trim() || !image} onClick={() => void submitUpload()}>
+          Enrol from this photo
+        </button>
+      </details>
     </div>
   );
 }
 
-export function ThreadPanel({ object, availableObjects, onSelectObject, onObjectEnrolled, profile, transcriptionConfigured }: Props) {
+export const ThreadPanel = memo(function ThreadPanel({ object, availableObjects, onSelectObject, onObjectEnrolled, onEnrollmentActiveChange, showImproveHint = false, provisionalDetections = [], onConfirmProvisional, profile, transcriptionConfigured }: Props) {
+  const [creatorOpen, setCreatorOpen] = useState(false);
+  const [draftReviewing, setDraftReviewing] = useState(false);
+  const [pendingTranscript, setPendingTranscript] = useState<ExternalTranscript | null>(null);
+  const [voiceAction, setVoiceAction] = useState<VoiceDraftAction | null>(null);
+  const [enrolRequest, setEnrolRequest] = useState<EnrolVoiceRequest | null>(null);
+  const nonceRef = useRef(0);
+  const nextNonce = () => ++nonceRef.current;
+  const [improveState, setImproveState] = useState<string | null>(null);
+  const [improveBusy, setImproveBusy] = useState(false);
+
+  async function addViewsToCurrent() {
+    if (!object) return;
+    setImproveBusy(true);
+    setImproveState("Look at the object inside the guide box and slowly turn it…");
+    onEnrollmentActiveChange?.(true);
+    try {
+      const result = await api.addViews(object.id);
+      setImproveState(
+        `Added views from ${result.diagnostics.frames_sampled} frames — ` +
+          `${result.reference_count} reference view(s) now enrolled. Keep looking at it.`,
+      );
+    } catch (error) {
+      setImproveState(error instanceof Error ? error.message : "Could not add views.");
+    } finally {
+      setImproveBusy(false);
+      onEnrollmentActiveChange?.(false);
+    }
+  }
   const [thread, setThread] = useState<ThreadResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [composerTarget, setComposerTarget] = useState<LockedTarget | null>(null);
+
+  // -- voice ---------------------------------------------------------------
+  const voiceMode = voiceModeForState(Boolean(object), Boolean(composerTarget), draftReviewing);
+  const confirmableProvisional =
+    provisionalDetections.length === 1 ? provisionalDetections[0] : null;
+  const voiceContext = {
+    objects: availableObjects.map((item) => ({ id: item.id, title: item.title })),
+    authorPosts: (thread?.posts ?? []).map((post) => ({
+      postId: post.id,
+      authorName: post.author.display_name,
+    })),
+    provisionalTitles: provisionalDetections.map(
+      (detection) => detection.object?.title ?? "Unknown object",
+    ),
+  };
+
+  function handleDictation(text: string): string {
+    if (!object) return "Open a thread first, or say “open the book”.";
+    if (!composerTarget) setComposerTarget(lockTarget(object));
+    setPendingTranscript({ text, nonce: nextNonce() });
+    return `Draft for “${object.title}” — review it, then say “post it” or press Post.`;
+  }
+
+  function handleVoiceIntent(intent: VoiceIntent): string {
+    switch (intent.type) {
+      case "post_draft":
+        setVoiceAction({ type: "post", nonce: nextNonce() });
+        return "Posting your reviewed draft…";
+      case "cancel_draft":
+        setVoiceAction({ type: "cancel", nonce: nextNonce() });
+        return "Draft cancelled — nothing was posted.";
+      case "retry_dictation":
+        setVoiceAction({ type: "retry", nonce: nextNonce() });
+        return "Draft cleared. Push to talk to record again.";
+      case "confirm_provisional":
+        if (!confirmableProvisional) return "No single possible match is visible to confirm.";
+        onConfirmProvisional?.(confirmableProvisional.identity_key);
+        return `Confirmed “${confirmableProvisional.object?.title ?? "object"}” — that view is banked.`;
+      case "open_object": {
+        if (composerTarget) return "Post or cancel the current draft first.";
+        const found = availableObjects.find((item) => item.id === intent.objectId);
+        if (!found) return "That object is no longer enrolled.";
+        onSelectObject(found);
+        return `Opened the “${found.title}” thread.`;
+      }
+      case "reply_to": {
+        if (!object) return "Open a thread first.";
+        if (composerTarget) return "Post or cancel the current draft first.";
+        const post = thread?.posts.find((item) => item.id === intent.postId);
+        if (!post) return "That post is no longer in this thread.";
+        setComposerTarget(lockTarget(object, post));
+        return `Replying to ${post.author.display_name} — dictate your reply.`;
+      }
+      case "enrol_live":
+        if (composerTarget) return "Post or cancel the current draft first.";
+        setCreatorOpen(true);
+        setEnrolRequest({ title: intent.title, nonce: nextNonce() });
+        return `Enrolling “${intent.title}” — look at it in the guide box and slowly turn it. Review the crops, then Save.`;
+      case "ambiguous":
+        return `That could be ${intent.candidates.join(" or ")} — be more specific; nothing was changed.`;
+      case "not_understood":
+        return `Heard “${intent.heard}” — that is not a command I can act on; nothing was changed.`;
+      case "dictation":
+        return handleDictation(intent.text);
+      default:
+        return "Nothing was changed.";
+    }
+  }
+
+  const voiceControl = (
+    <VoiceControl
+      transcriptionConfigured={transcriptionConfigured}
+      mode={voiceMode}
+      context={voiceContext}
+      threadObject={object}
+      threadPosts={thread?.posts ?? []}
+      onDictationStart={() => {
+        if (!object || composerTarget) return;
+        setPendingTranscript(null);
+        setVoiceAction(null);
+        setComposerTarget(lockTarget(object));
+      }}
+      onDictation={handleDictation}
+      onIntent={handleVoiceIntent}
+    />
+  );
 
   const loadThread = useCallback(
     async (signal?: AbortSignal) => {
@@ -125,15 +396,14 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, onObject
   );
 
   useEffect(() => {
+    stopSpeaking();
     setThread(null);
     setComposerTarget(null);
+    setDraftReviewing(false);
     if (object) {
       setLoading(true);
-      const controller = new AbortController();
-      void loadThread(controller.signal);
-      return () => controller.abort();
     }
-  }, [object, loadThread]);
+  }, [object]);
 
   usePolling(async (signal) => loadThread(signal), 1500, Boolean(object));
 
@@ -152,7 +422,11 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, onObject
             </button>
           ))}
         </div>
+        {voiceControl}
         <EnrollObject
+          enrolRequest={enrolRequest}
+          onEnrolRequestHandled={() => setEnrolRequest(null)}
+          onEnrollmentActiveChange={onEnrollmentActiveChange}
           onEnrolled={(created) => {
             onObjectEnrolled?.(created);
             onSelectObject(created);
@@ -181,6 +455,34 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, onObject
         <span>Attached to this object, not its category</span>
       </div>
 
+      {showImproveHint && (
+        <div className="panel-error" role="status">
+          <p>New object saved, but Locus hasn’t recognised it in view yet.</p>
+          <button disabled={improveBusy} onClick={() => void addViewsToCurrent()}>
+            {improveBusy ? "Scanning — keep looking…" : "Look at it & add more views (4s)"}
+          </button>
+          {improveState && <p>{improveState}</p>}
+        </div>
+      )}
+
+      <div className="thread-creator-toggle">
+        <button className="text-button" onClick={() => setCreatorOpen((open) => !open)}>
+          {creatorOpen ? "✕ Close new-object creator" : "＋ Create a new object"}
+        </button>
+      </div>
+      {creatorOpen && (
+        <EnrollObject
+          enrolRequest={enrolRequest}
+          onEnrolRequestHandled={() => setEnrolRequest(null)}
+          onEnrollmentActiveChange={onEnrollmentActiveChange}
+          onEnrolled={(created) => {
+            setCreatorOpen(false);
+            onObjectEnrolled?.(created);
+            onSelectObject(created);
+          }}
+        />
+      )}
+
       <div className="thread-body" aria-live="polite">
         {loading && !thread && <div className="panel-state"><span className="spinner" /> Loading conversation…</div>}
         {error && <p className="panel-error">{error}</p>}
@@ -188,7 +490,11 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, onObject
           <Message
             key={post.id}
             post={post}
-            onReply={(replyPost) => setComposerTarget(lockTarget(object, replyPost))}
+            onReply={(replyPost) => {
+              setPendingTranscript(null);
+              setVoiceAction(null);
+              setComposerTarget(lockTarget(object, replyPost));
+            }}
           />
         ))}
         {thread && thread.posts.length === 0 && (
@@ -196,15 +502,26 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, onObject
         )}
       </div>
 
+      {voiceControl}
+
       {composerTarget && profile ? (
         <Composer
           key={`${composerTarget.object.id}:${composerTarget.parentPost?.id ?? "new"}`}
           target={composerTarget}
           profile={profile}
           transcriptionConfigured={transcriptionConfigured}
-          onCancel={() => setComposerTarget(null)}
+          externalTranscript={pendingTranscript}
+          voiceAction={voiceAction}
+          onReviewChange={setDraftReviewing}
+          onCancel={() => {
+            setComposerTarget(null);
+            setPendingTranscript(null);
+            setVoiceAction(null);
+          }}
           onSaved={() => {
             setComposerTarget(null);
+            setPendingTranscript(null);
+            setVoiceAction(null);
             void loadThread();
           }}
         />
@@ -213,7 +530,11 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, onObject
           <button
             className="button button--primary button--wide"
             disabled={!profile}
-            onClick={() => setComposerTarget(lockTarget(object))}
+            onClick={() => {
+              setPendingTranscript(null);
+              setVoiceAction(null);
+              setComposerTarget(lockTarget(object));
+            }}
           >
             <span aria-hidden="true">＋</span> Leave a post
           </button>
@@ -222,4 +543,4 @@ export function ThreadPanel({ object, availableObjects, onSelectObject, onObject
       )}
     </aside>
   );
-}
+});

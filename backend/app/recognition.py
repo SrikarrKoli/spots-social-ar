@@ -20,6 +20,8 @@ class RecognizedInstance:
     corners: np.ndarray  # shape (4, 2), frame pixel coordinates
     confidence: float
     method: str  # "aruco" | "instance-features"
+    # "high" attaches seamlessly; "provisional" must be user-confirmed.
+    tier: str = "high"
 
 
 class Recognizer(Protocol):
@@ -99,15 +101,109 @@ def _make_extractor() -> tuple[object, int]:
     return cv2.ORB_create(nfeatures=1200), cv2.NORM_HAMMING
 
 
+_CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+# Enrolment photos (4032px phone shots) are normalised toward the 720p
+# webcam domain: a primary view capped at this size plus one half-scale view.
+MAX_REFERENCE_DIMENSION = 1280
+MAX_REFERENCES_PER_IDENTITY = 8
+VIEW_DUPLICATE_THRESHOLD = 5.0
+
+
+def _prepare_gray(image: np.ndarray) -> np.ndarray:
+    """Convert to grey and CLAHE-normalise so enrolment and live frames
+    share one contrast domain (helps matte/low-texture surfaces)."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    return _CLAHE.apply(gray)
+
+
+def _scaled_variants(gray: np.ndarray, *, extra_scale: bool) -> list[np.ndarray]:
+    height, width = gray.shape[:2]
+    largest = max(height, width)
+    variants = []
+    if largest > MAX_REFERENCE_DIMENSION:
+        scale = MAX_REFERENCE_DIMENSION / largest
+        variants.append(
+            cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        )
+    else:
+        variants.append(gray)
+    if extra_scale:
+        primary = variants[0]
+        if min(primary.shape[:2]) >= 160:
+            variants.append(
+                cv2.resize(primary, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+            )
+    return variants
+
+
+def _clip_polygon_to_rect(
+    polygon: list[tuple[float, float]], width: float, height: float
+) -> list[tuple[float, float]]:
+    """Sutherland–Hodgman clip of a polygon to the frame rectangle."""
+
+    def clip(points, inside, intersect):
+        if not points:
+            return points
+        output: list[tuple[float, float]] = []
+        previous = points[-1]
+        previous_inside = inside(previous)
+        for current in points:
+            current_inside = inside(current)
+            if current_inside:
+                if not previous_inside:
+                    output.append(intersect(previous, current))
+                output.append(current)
+            elif previous_inside:
+                output.append(intersect(previous, current))
+            previous, previous_inside = current, current_inside
+        return output
+
+    def cross_x(edge: float):
+        def intersect(a, b):
+            t = (edge - a[0]) / (b[0] - a[0]) if b[0] != a[0] else 0.0
+            return (edge, a[1] + t * (b[1] - a[1]))
+
+        return intersect
+
+    def cross_y(edge: float):
+        def intersect(a, b):
+            t = (edge - a[1]) / (b[1] - a[1]) if b[1] != a[1] else 0.0
+            return (a[0] + t * (b[0] - a[0]), edge)
+
+        return intersect
+
+    clipped = clip(polygon, lambda p: p[0] >= 0.0, cross_x(0.0))
+    clipped = clip(clipped, lambda p: p[0] <= width, cross_x(width))
+    clipped = clip(clipped, lambda p: p[1] >= 0.0, cross_y(0.0))
+    clipped = clip(clipped, lambda p: p[1] <= height, cross_y(height))
+    return clipped
+
+
+def _polygon_area(points: list[tuple[float, float]]) -> float:
+    if len(points) < 3:
+        return 0.0
+    total = 0.0
+    for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1], strict=True):
+        total += x0 * y1 - x1 * y0
+    return abs(total) / 2.0
+
+
 @dataclass(slots=True)
 class _Candidate:
     identity_key: str
     corners: np.ndarray
     inliers: int
     good_matches: int
+    # Set when geometry could not be homography-verified (non-planar
+    # fallback): such a sighting is never allowed to look like a
+    # confident, verified match.
+    confidence_override: float | None = None
 
     @property
     def confidence(self) -> float:
+        if self.confidence_override is not None:
+            return self.confidence_override
         return self.inliers / self.good_matches if self.good_matches else 0.0
 
 
@@ -117,36 +213,138 @@ class InstanceRecognizer:
     def __init__(
         self,
         *,
-        min_inliers: int = 12,
-        min_confidence: float = 0.30,
+        min_inliers: int = 15,
+        min_confidence: float = 0.35,
         ratio_test: float = 0.75,
         min_margin_inliers: int = 4,
+        provisional_min_inliers: int = 12,
+        provisional_min_confidence: float = 0.28,
     ) -> None:
         self.min_inliers = min_inliers
         self.min_confidence = min_confidence
         self.ratio_test = ratio_test
         self.min_margin_inliers = min_margin_inliers
+        self.provisional_min_inliers = provisional_min_inliers
+        self.provisional_min_confidence = provisional_min_confidence
         self._extractor, self._norm = _make_extractor()
         self._matcher = cv2.BFMatcher(self._norm)
         self._references: dict[str, list[_Reference]] = {}
+        self._view_thumbnails: dict[str, list[np.ndarray]] = {}
 
     # -- enrolment ------------------------------------------------------
 
-    def add_reference(self, identity_key: str, image: np.ndarray) -> bool:
-        """Enrol one view of an object. Returns False if it has no texture."""
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-        keypoints, descriptors = self._extractor.detectAndCompute(gray, None)
-        if descriptors is None or len(keypoints) < 8:
-            return False
-        height, width = gray.shape[:2]
-        self._references.setdefault(identity_key, []).append(
-            _Reference(list(keypoints), descriptors, width, height)
+    def add_reference(
+        self,
+        identity_key: str,
+        image: np.ndarray,
+        *,
+        extra_scale: bool = True,
+        min_keypoints: int = 8,
+    ) -> bool:
+        """Enrol one view of an object. Returns False if it has no texture.
+
+        Large photos are downscaled toward webcam resolution and, by
+        default, stored at one extra half scale so a 4032px phone photo
+        and a 720p webcam frame meet in the middle. ``min_keypoints`` is
+        the *enrolment* gate only — live enrolment passes a lower value
+        for low-texture objects; the strict recognition thresholds that
+        protect against false matches are unaffected.
+        """
+        gray = (
+            cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         )
-        return True
+        added = False
+        for variant in _scaled_variants(gray, extra_scale=extra_scale):
+            if self.reference_count(identity_key) >= MAX_REFERENCES_PER_IDENTITY:
+                break
+            prepared = _CLAHE.apply(variant)
+            keypoints, descriptors = self._extractor.detectAndCompute(prepared, None)
+            if descriptors is None or len(keypoints) < min_keypoints:
+                continue
+            height, width = prepared.shape[:2]
+            self._references.setdefault(identity_key, []).append(
+                _Reference(list(keypoints), descriptors, width, height)
+            )
+            added = True
+        return added
+
+    def reference_count(self, identity_key: str) -> int:
+        return len(self._references.get(identity_key, []))
+
+    def remove_reference(self, identity_key: str) -> bool:
+        self._view_thumbnails.pop(identity_key, None)
+        return self._references.pop(identity_key, None) is not None
+
+    @staticmethod
+    def _thumbnail(image: np.ndarray) -> np.ndarray:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        return cv2.resize(gray, (32, 32)).astype(np.float32)
+
+    def _remember_view(self, identity_key: str, image: np.ndarray) -> None:
+        self._view_thumbnails.setdefault(identity_key, []).append(
+            self._thumbnail(image)
+        )
+
+    def _is_duplicate_view(self, identity_key: str, image: np.ndarray) -> bool:
+        thumbnail = self._thumbnail(image)
+        return any(
+            float(np.mean(np.abs(thumbnail - existing)))
+            < VIEW_DUPLICATE_THRESHOLD
+            for existing in self._view_thumbnails.get(identity_key, [])
+        )
+
+    @staticmethod
+    def extract_view(frame: np.ndarray, corners: np.ndarray) -> np.ndarray | None:
+        """Perspective-rectify the region inside ``corners`` (TL,TR,BR,BL)."""
+        src = np.asarray(corners, dtype=np.float32).reshape(4, 2)
+        width = int(max(np.linalg.norm(src[1] - src[0]), np.linalg.norm(src[2] - src[3])))
+        height = int(
+            max(np.linalg.norm(src[3] - src[0]), np.linalg.norm(src[2] - src[1]))
+        )
+        if width < 60 or height < 60:
+            return None
+        dst = np.float32(
+            [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]]
+        )
+        transform = cv2.getPerspectiveTransform(src, dst)
+        return cv2.warpPerspective(frame, transform, (width, height))
+
+    def bank_view(
+        self, identity_key: str, frame: np.ndarray, corners: np.ndarray
+    ) -> np.ndarray | None:
+        """Bank a new-angle crop as an extra view of an enrolled identity.
+
+        Identity is inherited from track continuity / user confirmation by
+        the caller — this never matches, it only enrols the crop under the
+        given key. Returns the banked crop, or None if it was unusable.
+        """
+        if identity_key not in self._references:
+            return None
+        if self.reference_count(identity_key) >= MAX_REFERENCES_PER_IDENTITY:
+            return None
+        crop = self.extract_view(frame, corners)
+        if crop is None:
+            return None
+        if self._is_duplicate_view(identity_key, crop):
+            return None
+        if not self.add_reference(identity_key, crop, extra_scale=False):
+            return None
+        self._remember_view(identity_key, crop)
+        return crop
 
     def load_reference(self, identity_key: str, path: Path) -> bool:
         image = cv2.imread(str(path))
-        return image is not None and self.add_reference(identity_key, image)
+        if image is None:
+            return False
+        is_live_sized = any(
+            marker in path.name for marker in ("-banked-", "-live-", "-added-")
+        )
+        added = self.add_reference(
+            identity_key, image, extra_scale=not is_live_sized
+        )
+        if added:
+            self._remember_view(identity_key, image)
+        return added
 
     def load_references(self, references: list[tuple[str, Path]]) -> None:
         for identity_key, path in references:
@@ -161,7 +359,7 @@ class InstanceRecognizer:
     def detect(self, frame: np.ndarray) -> list[RecognizedInstance]:
         if not self._references:
             return []
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        gray = _prepare_gray(frame)
         frame_kp, frame_des = self._extractor.detectAndCompute(gray, None)
         if frame_des is None or len(frame_kp) < 8:
             return []
@@ -182,41 +380,55 @@ class InstanceRecognizer:
             return []
 
         # Distinguish, don't guess: a sighting must clear the absolute bar.
-        # The margin only applies when two identities claim the *same* region
-        # (overlapping corners) — two different objects co-visible in a frame
-        # are both legitimate and must both be reported.
+        # Tiered confidence: clearing the high bar attaches seamlessly;
+        # clearing only the lower provisional bar is reported as
+        # provisional (user-confirmable, never auto-attached); anything
+        # below that is unknown. The margin only applies when two
+        # identities claim the *same* region (overlapping corners) — two
+        # different objects co-visible in a frame are both legitimate.
         ranked = sorted(
             best_per_identity.values(), key=lambda c: c.inliers, reverse=True
         )
         accepted: list[RecognizedInstance] = []
-        kept: list[_Candidate] = []
+        kept: list[tuple[_Candidate, str]] = []
         for candidate in ranked:
             if (
-                candidate.inliers < self.min_inliers
-                or candidate.confidence < self.min_confidence
+                candidate.inliers >= self.min_inliers
+                and candidate.confidence >= self.min_confidence
             ):
+                tier = "high"
+            elif (
+                candidate.inliers >= self.provisional_min_inliers
+                and candidate.confidence >= self.provisional_min_confidence
+            ):
+                tier = "provisional"
+            else:
                 continue
             rival = next(
-                (k for k in kept if self._same_region(k, candidate)), None
+                (k for k in kept if self._same_region(k[0], candidate)), None
             )
             if rival is not None:
-                # Same region, rival already kept (higher inliers): only keep
-                # this one if it is clearly stronger — impossible by ordering,
-                # so ambiguous claims collapse to the stronger match; a tie
-                # within the margin drops both.
-                if rival.inliers - candidate.inliers < self.min_margin_inliers:
+                rival_candidate, rival_tier = rival
+                if rival_tier == "high" and tier == "provisional":
+                    continue  # A confident claim on this region wins.
+                # Same region, rival already kept (higher inliers): a tie
+                # within the margin drops both rather than guessing.
+                if rival_candidate.inliers - candidate.inliers < self.min_margin_inliers:
                     kept.remove(rival)
                     accepted = [
-                        a for a in accepted if a.identity_key != rival.identity_key
+                        a
+                        for a in accepted
+                        if a.identity_key != rival_candidate.identity_key
                     ]
                 continue
-            kept.append(candidate)
+            kept.append((candidate, tier))
             accepted.append(
                 RecognizedInstance(
                     identity_key=candidate.identity_key,
                     corners=candidate.corners,
                     confidence=round(candidate.confidence, 3),
                     method=self.method,
+                    tier=tier,
                 )
             )
         return accepted
@@ -260,7 +472,7 @@ class InstanceRecognizer:
             best, second = pair
             if best.distance < self.ratio_test * second.distance:
                 good.append(best)
-        if len(good) < self.min_inliers:
+        if len(good) < self.provisional_min_inliers:
             return None
 
         src = np.float32([reference.keypoints[m.queryIdx].pt for m in good]).reshape(
@@ -294,19 +506,52 @@ class InstanceRecognizer:
         )
         if not self._corners_plausible(corners, frame_w, frame_h):
             return None
-        return _Candidate(identity_key, corners, inliers, inliers)
+        # No homography verification (non-planar fallback): cap this at
+        # provisional tier — it can be shown as a possible match for the
+        # user to confirm, but never attaches seamlessly and never
+        # displays as a fabricated 100%.
+        return _Candidate(
+            identity_key,
+            corners,
+            inliers,
+            inliers,
+            confidence_override=self.provisional_min_confidence,
+        )
 
     @staticmethod
     def _corners_plausible(corners: np.ndarray, frame_w: int, frame_h: int) -> bool:
-        area = cv2.contourArea(corners.astype(np.float32))
-        if area < 0.002 * frame_w * frame_h:
+        """Accept objects close to / partially out of frame; reject only
+        degenerate homographies.
+
+        The old bound (every corner within ±25% of the frame) threw away
+        excellent matches — e.g. 397 inliers at 0.94 confidence — whenever
+        a near object projected past the edge. Instead: the quad must be
+        finite and convex, and at least 20% of it must be visible inside
+        the frame with a non-trivial visible area.
+        """
+        points = [(float(x), float(y)) for x, y in np.asarray(corners, dtype=float)]
+        if len(points) != 4 or not all(
+            np.isfinite(coord) for point in points for coord in point
+        ):
             return False
-        return bool(
-            np.all(corners[:, 0] >= -0.25 * frame_w)
-            and np.all(corners[:, 0] <= 1.25 * frame_w)
-            and np.all(corners[:, 1] >= -0.25 * frame_h)
-            and np.all(corners[:, 1] <= 1.25 * frame_h)
+        # A homography of a rectangle is convex; a bow-tie / folded quad
+        # (cross products changing sign) is a degenerate projection.
+        crosses = []
+        for index in range(4):
+            x0, y0 = points[index]
+            x1, y1 = points[(index + 1) % 4]
+            x2, y2 = points[(index + 2) % 4]
+            crosses.append((x1 - x0) * (y2 - y1) - (y1 - y0) * (x2 - x1))
+        if not (all(c > 0 for c in crosses) or all(c < 0 for c in crosses)):
+            return False
+        area = _polygon_area(points)
+        frame_area = float(frame_w * frame_h)
+        if area < 0.002 * frame_area or area > 20.0 * frame_area:
+            return False
+        visible = _polygon_area(
+            _clip_polygon_to_rect(points, float(frame_w), float(frame_h))
         )
+        return visible >= 0.002 * frame_area and visible >= 0.20 * area
 
 
 def build_recognizer(

@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { CameraStage } from "./components/CameraStage";
 import { ThreadPanel } from "./components/ThreadPanel";
 import { Avatar } from "./components/Avatar";
 import { usePolling } from "./hooks/usePolling";
-import type { HealthResponse, ObjectSummary, Profile, RecognitionResponse } from "./types";
+import type { Detection, HealthResponse, ObjectSummary, Profile, RecognitionResponse } from "./types";
+
+const NO_DETECTIONS: Detection[] = [];
 
 export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -14,6 +16,8 @@ export default function App() {
   const [recognition, setRecognition] = useState<RecognitionResponse | null>(null);
   const [recognitionError, setRecognitionError] = useState<string | null>(null);
   const [manualIdentityKey, setManualIdentityKey] = useState<string | null>(null);
+  const [enrollmentActive, setEnrollmentActive] = useState(false);
+  const [newlyCreatedId, setNewlyCreatedId] = useState<string | null>(null);
   const [selectedObject, setSelectedObject] = useState<ObjectSummary | null>(null);
 
   useEffect(() => {
@@ -36,8 +40,24 @@ export default function App() {
       const snapshot = await api.recognition(signal);
       setRecognition(snapshot);
       setRecognitionError(null);
-      const firstObject = snapshot.detections.find((detection) => detection.object)?.object;
-      if (firstObject) setSelectedObject((current) => current ?? firstObject);
+      const firstObject = snapshot.detections.find(
+        (detection) => detection.object && detection.tier !== "provisional",
+      )?.object;
+      // A freshly created object clears its improve hint once it is
+      // actually recognised at high tier.
+      if (
+        newlyCreatedId &&
+        snapshot.detections.some(
+          (detection) =>
+            detection.object?.id === newlyCreatedId && detection.tier === "high",
+        )
+      ) {
+        setNewlyCreatedId(null);
+      }
+      // Never let recognition hijack the screen mid-creation.
+      if (firstObject && !enrollmentActive) {
+        setSelectedObject((current) => current ?? firstObject);
+      }
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         setRecognitionError(error instanceof Error ? error.message : "Recognition updates stopped.");
@@ -49,6 +69,22 @@ export default function App() {
     () => profiles.find((profile) => profile.id === profileId) ?? profiles[0] ?? null,
     [profileId, profiles],
   );
+  const provisionalDetections = useMemo(() => {
+    const detections = recognition?.detections.filter(
+      (detection) => detection.object && detection.tier === "provisional",
+    );
+    return detections?.length ? detections : NO_DETECTIONS;
+  }, [recognition]);
+  const handleObjectEnrolled = useCallback((created: ObjectSummary) => {
+    setObjects((current) => [
+      ...current.filter((item) => item.id !== created.id),
+      created,
+    ]);
+    setNewlyCreatedId(created.id);
+  }, []);
+  const handleConfirmProvisional = useCallback((identityKey: string) => {
+    void api.confirmIdentity(identityKey).catch(() => undefined);
+  }, []);
 
   return (
     <main className="app-shell">
@@ -86,14 +122,20 @@ export default function App() {
           manualIdentityKey={manualIdentityKey}
           onManualIdentity={setManualIdentityKey}
           onOpenObject={(detection) => detection.object && setSelectedObject(detection.object)}
+          onConfirmIdentity={(detection) => {
+            void api.confirmIdentity(detection.identity_key).catch(() => undefined);
+          }}
+          enrollmentActive={enrollmentActive}
         />
         <ThreadPanel
           object={selectedObject}
           availableObjects={objects}
           onSelectObject={setSelectedObject}
-          onObjectEnrolled={(created) =>
-            setObjects((current) => [...current.filter((item) => item.id !== created.id), created])
-          }
+          onObjectEnrolled={handleObjectEnrolled}
+          onEnrollmentActiveChange={setEnrollmentActive}
+          showImproveHint={Boolean(selectedObject && selectedObject.id === newlyCreatedId)}
+          provisionalDetections={provisionalDetections}
+          onConfirmProvisional={handleConfirmProvisional}
           profile={currentProfile}
           transcriptionConfigured={health?.transcription_status === "configured"}
         />

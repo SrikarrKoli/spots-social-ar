@@ -32,23 +32,37 @@ rehearsal.
 - [ ] Connect the glasses microphone or confirm the laptop microphone fallback.
 - [ ] Grant microphone permission to the demo browser.
 - [ ] Confirm the desired microphone appears in the in-app microphone selector.
-- [ ] Create or obtain an OpenAI API key with transcription access.
-- [ ] Configure these values in `.env`:
+- [ ] Configure local transcription in `.env` (no API key required):
 
   ```dotenv
-  APP_TRANSCRIPTION_PROVIDER=openai
-  OPENAI_API_KEY=your_key_here
-  OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe
+  APP_TRANSCRIPTION_PROVIDER=faster-whisper
+  APP_WHISPER_MODEL=medium
+  APP_WHISPER_DEVICE=cpu
+  APP_WHISPER_COMPUTE_TYPE=int8
   ```
+
+- [ ] (Optional cloud alternative) Set `APP_TRANSCRIPTION_PROVIDER=openai`,
+  `OPENAI_API_KEY`, and `OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe`.
 
 - [ ] Restart the backend after changing `.env`.
 - [ ] Record a real spoken reply, stop recording, and confirm an actual transcript
   appears in the editable review step.
+- [ ] Select the **webcam/glasses microphone** in the 🎙 mic picker (the choice
+  persists) and confirm the backend camera keeps streaming at the same time —
+  the browser captures only the webcam's audio, never its video.
+- [ ] Voice flow: push-to-talk to dictate in an open thread, review, then
+  push-to-talk and say “post it”; confirm nothing publishes on transcription
+  alone. Test voice Retry/Cancel, transcript editing, and the Post button.
+- [ ] Voice commands: “open the book”, “reply to Maya”, “enrol this as …”
+  (scan → review crops → Save), “yes that's it” on a possible match, and
+  “read the thread” / “stop reading”. Say an unknown object name and confirm
+  Locus does nothing rather than guessing.
 - [ ] Test Retry, Cancel, transcript editing, and Post.
-- [ ] Confirm no message is published before Post is pressed.
+- [ ] Confirm no message is published before the Post button or an explicit
+  voice “post it” confirmation.
 - [ ] Test the microphone-denied and provider-error states once.
 
-If live transcription credentials are unavailable, keep
+If neither local nor cloud transcription can be used, keep
 `APP_TRANSCRIPTION_PROVIDER=disabled`. Typed posting remains demo-ready, but
 speech-to-text should be described as unconfigured rather than demonstrated.
 
@@ -96,8 +110,7 @@ speech-to-text should be described as unconfigured rather than demonstrated.
 - [ ] Add a short first-run hint explaining how to enrol/position an object.
 - [ ] Add an unobtrusive recording timer.
 - [ ] Capture a backup screen recording of the successful demo flow.
-- [ ] Add bounded voice-command intent parsing only if the core demo is already
-  reliable; this is not required for the MVP.
+- [x] Add bounded, deterministic voice-command parsing with no guessed actions.
 
 ## Completion gate
 

@@ -62,10 +62,53 @@ class Detection(BaseModel):
     identity_key: str
     confidence: float = 1.0
     method: str = "instance-features"
+    tier: Literal["high", "provisional"] = "high"
     corners: list[list[float]]
     center: list[float]
     object: ObjectSummary | None = None
     preview: ConversationPreview | None = None
+
+
+class ScanRequest(BaseModel):
+    duration_seconds: float = Field(default=4.0, ge=3.0, le=5.0)
+
+
+class EnrollLiveRequest(BaseModel):
+    """Create an object from a reviewed pending scan."""
+
+    scan_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class ConfirmIdentityRequest(BaseModel):
+    identity_key: str = Field(min_length=1, max_length=200)
+
+
+class EnrollmentDiagnostics(BaseModel):
+    frames_sampled: int
+    views_selected: int
+    views_enrolled: int
+    best_sharpness: float
+
+
+class EnrollLiveResponse(ObjectSummary):
+    # Base64 JPEG thumbnails of the exact centre crops that were enrolled,
+    # so the user can see what the system thinks the object is.
+    captured_views: list[str] = Field(default_factory=list)
+    diagnostics: EnrollmentDiagnostics
+
+
+class ScanResponse(BaseModel):
+    scan_id: str
+    captured_views: list[str] = Field(default_factory=list)
+    diagnostics: EnrollmentDiagnostics
+
+
+class AddViewsResponse(BaseModel):
+    object_id: str
+    reference_count: int
+    diagnostics: EnrollmentDiagnostics
 
 
 class RecognitionResponse(BaseModel):
@@ -83,6 +126,22 @@ class HealthResponse(BaseModel):
     camera_status: str
     camera_source: str
     transcription_status: str
+
+
+class PerformanceDiagnostics(BaseModel):
+    capture_fps: float
+    recognition_fps: float
+    stream_fps: float
+    recognition_p50_ms: float
+    recognition_p95_ms: float
+    latest_frame_age_ms: float | None
+    captured_sequence: int
+    recognized_sequence: int
+    encoded_sequence: int
+    active_stream_clients: int
+    active_reference_variants: int
+    bank_persist_queue_depth: int
+    bank_persist_dropped: int
 
 
 class TranscriptionResponse(BaseModel):

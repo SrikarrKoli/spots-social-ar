@@ -8,6 +8,8 @@ interface Props {
   manualIdentityKey: string | null;
   onManualIdentity: (identityKey: string) => void;
   onOpenObject: (detection: Detection) => void;
+  onConfirmIdentity?: (detection: Detection) => void;
+  enrollmentActive?: boolean;
 }
 
 export function CameraStage({
@@ -16,6 +18,8 @@ export function CameraStage({
   manualIdentityKey,
   onManualIdentity,
   onOpenObject,
+  onConfirmIdentity,
+  enrollmentActive = false,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
@@ -80,6 +84,12 @@ export function CameraStage({
           </div>
         )}
 
+        {!cameraMissing && enrollmentActive && (
+          <div className="enrollment-guide" aria-hidden="true">
+            <span>PUT THE OBJECT IN THIS BOX · SLOWLY TURN IT</span>
+          </div>
+        )}
+
         {!cameraMissing && recognition?.status === "starting" && (
           <div className="camera-hint">Starting camera…</div>
         )}
@@ -91,7 +101,25 @@ export function CameraStage({
           </div>
         )}
 
-        {active?.object && activePosition && (
+        {active?.object && activePosition && active.tier === "provisional" && (
+          <div
+            className="object-peek"
+            style={{ left: activePosition[0], top: activePosition[1] }}
+          >
+            <span className="object-peek__pin" />
+            <span className="object-peek__label">POSSIBLE MATCH — NOT ATTACHED YET</span>
+            <strong>{active.object.title}?</strong>
+            <span className="object-peek__meta">
+              Recognised instance · {Math.round(active.confidence * 100)}% match — Locus is not sure
+            </span>
+            <b>
+              <button onClick={() => onConfirmIdentity?.(active)}>Yes, this is it</button>{" "}
+              <button onClick={() => onOpenObject(active)}>Open thread</button>
+            </b>
+          </div>
+        )}
+
+        {active?.object && activePosition && active.tier !== "provisional" && (
           <button
             className="object-peek"
             style={{ left: activePosition[0], top: activePosition[1] }}

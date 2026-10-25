@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import re
 from contextlib import asynccontextmanager
@@ -17,13 +18,20 @@ from .camera import CameraService
 from .config import ROOT, Settings
 from .database import Database, seed_demo
 from .models import (
-    ConversationPreview,
+    AddViewsResponse,
+    ConfirmIdentityRequest,
     CreatePostRequest,
+    EnrollLiveRequest,
+    EnrollLiveResponse,
+    EnrollmentDiagnostics,
     HealthResponse,
     ObjectSummary,
+    PerformanceDiagnostics,
     Post,
     Profile,
     RecognitionResponse,
+    ScanRequest,
+    ScanResponse,
     ThreadResponse,
     TranscriptionResponse,
 )
@@ -50,6 +58,7 @@ SUPPORTED_AUDIO_TYPES = {
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or Settings.from_env()
+    cv2.setNumThreads(app_settings.opencv_threads)
     database = Database(app_settings.database_path)
     repository = Repository(database)
     camera = CameraService(
@@ -64,20 +73,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app_settings.recognizer,
             dictionary_name=app_settings.marker_dictionary,
         ),
+        recognition_max_width=app_settings.recognition_max_width,
+        recognition_fps=app_settings.recognition_fps,
+        stream_fps=app_settings.stream_fps,
+        jpeg_quality=app_settings.stream_jpeg_quality,
+        max_auto_banked_per_identity=(
+            app_settings.max_auto_banked_files_per_identity
+        ),
     )
     transcription = build_transcription_provider(
         provider=app_settings.transcription_provider,
         api_key=app_settings.openai_api_key,
         model=app_settings.openai_transcription_model,
         prompt=app_settings.openai_transcription_prompt,
+        whisper_model=app_settings.whisper_model,
+        whisper_device=app_settings.whisper_device,
+        whisper_compute_type=app_settings.whisper_compute_type,
     )
+    camera.load_shed_active = lambda: bool(
+        getattr(transcription, "busy", False)
+    )
+
+    def _relative_reference(path: Path) -> str:
+        try:
+            return str(path.relative_to(ROOT))
+        except ValueError:
+            return str(path)
+
+    def _thumbnails(views: list[np.ndarray]) -> list[str]:
+        thumbnails: list[str] = []
+        for view in views:
+            thumb = cv2.resize(
+                view, (240, int(240 * view.shape[0] / max(1, view.shape[1])))
+            )
+            ok, encoded = cv2.imencode(
+                ".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 70]
+            )
+            if ok:
+                thumbnails.append(base64.b64encode(encoded.tobytes()).decode())
+        return thumbnails
+
+    def _diagnostics(capture: object, views_enrolled: int) -> EnrollmentDiagnostics:
+        return EnrollmentDiagnostics(
+            frames_sampled=capture.frames_sampled,
+            views_selected=len(capture.views),
+            views_enrolled=views_enrolled,
+            best_sharpness=round(capture.best_sharpness, 1),
+        )
+
+    def _persist_banked_view(identity_key: str, image: np.ndarray) -> None:
+        record = repository.object_by_identity(identity_key)
+        if record is None:
+            return
+        success, encoded = cv2.imencode(".png", image)
+        if not success:
+            return
+        digest = hashlib.sha1(encoded.tobytes()).hexdigest()[:10]
+        app_settings.enrolled_dir.mkdir(parents=True, exist_ok=True)
+        path = app_settings.enrolled_dir / f"{record.id}-banked-{digest}.png"
+        if path.exists():
+            return
+        path.write_bytes(encoded.tobytes())
+        repository.add_reference_path(record.id, _relative_reference(path))
+
+    camera.view_bank_sink = _persist_banked_view
+
+    def _slug_object_id(title: str, digest_source: bytes) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", title.strip().lower()).strip("-")
+        if not slug:
+            raise HTTPException(status_code=422, detail="Title needs a letter or digit")
+        digest = hashlib.sha1(digest_source).hexdigest()[:8]
+        return f"{slug}-{digest}"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         seed_demo(database)
         references = [
             (identity_key, ROOT / reference_path)
-            for identity_key, reference_path in repository.object_references()
+            for identity_key, reference_path in repository.object_references(
+                max_per_identity=app_settings.max_reference_files_per_identity
+            )
         ]
         camera.load_reference_files(references)
         camera.start()
@@ -102,6 +177,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             camera_source=camera.source,
             transcription_status=transcription.status,
         )
+
+    @app.get(
+        "/api/diagnostics/performance", response_model=PerformanceDiagnostics
+    )
+    async def performance_diagnostics() -> PerformanceDiagnostics:
+        return PerformanceDiagnostics.model_validate(camera.performance_snapshot())
 
     @app.get("/api/profiles", response_model=list[Profile])
     async def profiles() -> list[Profile]:
@@ -170,6 +251,236 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return record
 
+    @app.post("/api/objects/enroll-live/scan", response_model=ScanResponse)
+    async def scan_live(payload: ScanRequest) -> ScanResponse:
+        """Stage 1 of creating an object: burst-scan only.
+
+        Nothing is enrolled or persisted — the scan waits (5 min) for
+        the user to review the crops and confirm creation.
+        """
+        if camera.source == "disabled":
+            raise HTTPException(
+                status_code=503,
+                detail="Camera is disabled; live enrolment needs the camera",
+            )
+        scan_id, capture = await asyncio.to_thread(
+            camera.create_pending_scan, payload.duration_seconds
+        )
+        if scan_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"No usable view captured (sampled {capture.frames_sampled} "
+                    f"frames, best sharpness {capture.best_sharpness:.0f}) — "
+                    "hold the object inside the centre guide, in good light, "
+                    "and slowly turn it"
+                ),
+            )
+        return ScanResponse(
+            scan_id=scan_id,
+            captured_views=_thumbnails(capture.views),
+            diagnostics=_diagnostics(capture, 0),
+        )
+
+    @app.post(
+        "/api/objects/enroll-live/scans/{scan_id}/more", response_model=ScanResponse
+    )
+    async def scan_more(scan_id: str, payload: ScanRequest) -> ScanResponse:
+        capture = await asyncio.to_thread(
+            camera.extend_pending_scan, scan_id, payload.duration_seconds
+        )
+        if capture is None:
+            raise HTTPException(
+                status_code=404, detail="Scan not found or expired — scan again"
+            )
+        return ScanResponse(
+            scan_id=scan_id,
+            captured_views=_thumbnails(capture.views),
+            diagnostics=_diagnostics(capture, 0),
+        )
+
+    @app.delete("/api/objects/enroll-live/scans/{scan_id}")
+    async def discard_scan(scan_id: str) -> dict[str, bool]:
+        if not camera.drop_pending_scan(scan_id):
+            raise HTTPException(status_code=404, detail="Scan not found")
+        return {"deleted": True}
+
+    @app.post(
+        "/api/objects/enroll-live",
+        response_model=EnrollLiveResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def enroll_object_live(payload: EnrollLiveRequest) -> EnrollLiveResponse:
+        """Stage 2: create the object from a reviewed pending scan.
+
+        Only now are views enrolled, files written, and the object (and
+        its thread) persisted.
+        """
+        capture = camera.get_pending_scan(payload.scan_id)
+        if capture is None:
+            raise HTTPException(
+                status_code=404, detail="Scan not found or expired — scan again"
+            )
+        views = capture.views
+        success, first_encoded = cv2.imencode(".png", views[0])
+        if not success:
+            raise HTTPException(status_code=422, detail="Captured view was unusable")
+        object_id = _slug_object_id(payload.title, first_encoded.tobytes())
+
+        enrolled_dir = app_settings.enrolled_dir
+        enrolled_dir.mkdir(parents=True, exist_ok=True)
+        reference_paths: list[str] = []
+        enrolled_views: list[np.ndarray] = []
+        for index, view in enumerate(views):
+            # Enrolment gate is deliberately looser than recognition:
+            # low-texture objects may enrol from few keypoints, while the
+            # strict 15-inlier / 0.35 recognition bar prevents guessing.
+            if not camera.enroll_reference(object_id, view, min_keypoints=5):
+                continue
+            ok, encoded = cv2.imencode(".png", view)
+            if not ok:
+                continue
+            path = enrolled_dir / f"{object_id}-live-{index}.png"
+            path.write_bytes(encoded.tobytes())
+            reference_paths.append(_relative_reference(path))
+            enrolled_views.append(view)
+        if not reference_paths:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Captured {len(views)} view(s) from {capture.frames_sampled} "
+                    "frames, but none had enough visible texture to enrol — "
+                    "try better light or a less plain side of the object"
+                ),
+            )
+        record = await asyncio.to_thread(
+            repository.enroll_object,
+            object_id=object_id,
+            title=payload.title.strip(),
+            description=payload.description.strip()
+            if payload.description
+            else None,
+            reference_path=reference_paths[0],
+            extra_reference_paths=tuple(reference_paths[1:]),
+        )
+        camera.drop_pending_scan(payload.scan_id)
+        return EnrollLiveResponse(
+            **record.model_dump(),
+            captured_views=_thumbnails(enrolled_views),
+            diagnostics=_diagnostics(capture, len(reference_paths)),
+        )
+
+    @app.post(
+        "/api/objects/{object_id}/add-views", response_model=AddViewsResponse
+    )
+    async def add_views(object_id: str, payload: ScanRequest) -> AddViewsResponse:
+        """Improve an existing object with another live burst of views.
+
+        The object's identity and thread are untouched; the new angles
+        are banked under the same identity (like tracked view banking).
+        """
+        record = await asyncio.to_thread(repository.object_by_id, object_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Object not found")
+        if camera.source == "disabled":
+            raise HTTPException(
+                status_code=503,
+                detail="Camera is disabled; adding views needs the camera",
+            )
+        capture = await asyncio.to_thread(
+            camera.capture_enrollment_capture, payload.duration_seconds
+        )
+        if not capture.views:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"No usable view captured (sampled {capture.frames_sampled} "
+                    f"frames, best sharpness {capture.best_sharpness:.0f}) — "
+                    "hold the object inside the centre guide and slowly turn it"
+                ),
+            )
+        enrolled_dir = app_settings.enrolled_dir
+        enrolled_dir.mkdir(parents=True, exist_ok=True)
+        added = 0
+        for view in capture.views:
+            if not camera.enroll_reference(
+                record.identity_key, view, min_keypoints=5
+            ):
+                continue
+            ok, encoded = cv2.imencode(".png", view)
+            if not ok:
+                continue
+            digest = hashlib.sha1(encoded.tobytes()).hexdigest()[:10]
+            path = enrolled_dir / f"{record.id}-added-{digest}.png"
+            if not path.exists():
+                path.write_bytes(encoded.tobytes())
+                await asyncio.to_thread(
+                    repository.add_reference_path,
+                    record.id,
+                    _relative_reference(path),
+                )
+            added += 1
+        if not added:
+            raise HTTPException(
+                status_code=422,
+                detail="None of the captured views had enough texture to add",
+            )
+        return AddViewsResponse(
+            object_id=record.id,
+            reference_count=camera.reference_count(record.identity_key),
+            diagnostics=_diagnostics(capture, added),
+        )
+
+    @app.post("/api/recognition/confirm")
+    async def confirm_identity(payload: ConfirmIdentityRequest) -> dict[str, bool]:
+        """Confirm a provisional sighting; banks that view for the object."""
+        confirmed = await asyncio.to_thread(
+            camera.confirm_identity, payload.identity_key
+        )
+        if not confirmed:
+            raise HTTPException(
+                status_code=404, detail="No current sighting of that object"
+            )
+        return {"confirmed": True}
+
+    @app.delete("/api/objects/{object_id}")
+    async def discard_object(object_id: str) -> dict[str, bool]:
+        """Discard an enrolment (e.g. the captured crops were wrong).
+
+        Only objects enrolled into the enrolled dir can be discarded,
+        seeded demo objects cannot, and an object with posts is kept —
+        discarding must never silently delete a conversation.
+        """
+        record = await asyncio.to_thread(repository.object_by_id, object_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Object not found")
+        if await asyncio.to_thread(repository.post_count, object_id) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail="This object has posts; its enrolment cannot be discarded",
+            )
+        paths = await asyncio.to_thread(
+            repository.object_reference_paths, object_id
+        )
+        enrolled_root = app_settings.enrolled_dir.resolve()
+        files: list[Path] = []
+        for raw in paths:
+            candidate = Path(raw)
+            resolved = (
+                candidate if candidate.is_absolute() else ROOT / candidate
+            ).resolve()
+            if enrolled_root not in resolved.parents:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Only live/photo-enrolled objects can be discarded",
+                )
+            files.append(resolved)
+        camera.remove_reference(record.identity_key)
+        for path in files:
+            path.unlink(missing_ok=True)
+        await asyncio.to_thread(repository.delete_object, object_id)
+        return {"deleted": True}
+
     @app.get("/api/objects/{object_id}/posts", response_model=ThreadResponse)
     async def thread(object_id: str) -> ThreadResponse:
         try:
@@ -200,22 +511,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/recognition", response_model=RecognitionResponse)
     async def recognition() -> RecognitionResponse:
         snapshot = camera.snapshot()
+        identity_keys = [
+            detection["identity_key"] for detection in snapshot["detections"]
+        ]
+        context = await asyncio.to_thread(
+            repository.recognition_context, identity_keys
+        )
         for detection in snapshot["detections"]:
-            object_record = await asyncio.to_thread(
-                repository.object_by_identity, detection["identity_key"]
-            )
-            detection["object"] = object_record
-            if object_record is not None:
-                object_thread = await asyncio.to_thread(
-                    repository.thread, object_record.id
-                )
-                if object_thread.posts:
-                    preview_post = object_thread.posts[-1]
-                    detection["preview"] = ConversationPreview(
-                        author_name=preview_post.author.display_name,
-                        body=preview_post.body,
-                        reply_count=len(preview_post.replies),
-                    )
+            resolved = context.get(detection["identity_key"])
+            if resolved is not None:
+                detection["object"], detection["preview"] = resolved
         return RecognitionResponse.model_validate(snapshot)
 
     @app.get("/api/camera/stream")

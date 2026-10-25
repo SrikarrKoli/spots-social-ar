@@ -1,5 +1,8 @@
 import type {
+  AddViewsResult,
   HealthResponse,
+  LiveEnrollment,
+  LiveScan,
   ObjectSummary,
   Post,
   Profile,
@@ -81,6 +84,55 @@ export const api = {
     return fetch("/api/objects/enroll", { method: "POST", body: form }).then(
       (response) => parseResponse<ObjectSummary>(response),
     );
+  },
+  scanLive() {
+    return fetch("/api/objects/enroll-live/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duration_seconds: 4 }),
+    }).then((response) => parseResponse<LiveScan>(response));
+  },
+  scanMore(scanId: string) {
+    return fetch(`/api/objects/enroll-live/scans/${encodeURIComponent(scanId)}/more`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duration_seconds: 4 }),
+    }).then((response) => parseResponse<LiveScan>(response));
+  },
+  discardScan(scanId: string) {
+    return fetch(`/api/objects/enroll-live/scans/${encodeURIComponent(scanId)}`, {
+      method: "DELETE",
+    }).then((response) => parseResponse<{ deleted: boolean }>(response));
+  },
+  enrollLive(scanId: string, title: string, description: string) {
+    return fetch("/api/objects/enroll-live", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scan_id: scanId,
+        title,
+        description: description || null,
+      }),
+    }).then((response) => parseResponse<LiveEnrollment>(response));
+  },
+  addViews(objectId: string) {
+    return fetch(`/api/objects/${encodeURIComponent(objectId)}/add-views`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duration_seconds: 4 }),
+    }).then((response) => parseResponse<AddViewsResult>(response));
+  },
+  discardObject(objectId: string) {
+    return fetch(`/api/objects/${encodeURIComponent(objectId)}`, {
+      method: "DELETE",
+    }).then((response) => parseResponse<{ deleted: boolean }>(response));
+  },
+  confirmIdentity(identityKey: string) {
+    return fetch("/api/recognition/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identity_key: identityKey }),
+    }).then((response) => parseResponse<{ confirmed: boolean }>(response));
   },
   transcribe(blob: Blob) {
     const form = new FormData();

@@ -66,7 +66,11 @@ configured. The UI must never substitute canned text for a real transcript.
 - Real markerless instance recognition (local features + homography) and
   timestamped object coordinates, with confidence and an explicit unknown state.
 - Enrolled objects mapped one-to-one to seeded physical objects; new objects
-  can be enrolled from a photo — no printed marker is ever attached.
+  are enrolled **from the live camera** — the wearer looks at the object for
+  ~4s while the backend burst-captures sharp, centred, diverse views
+  (`POST /api/objects/enroll-live`). Photo upload (`POST /api/objects/enroll`)
+  remains only as a dev/test harness for building regression image sets. No
+  printed marker is ever attached.
 - Predictable active-object selection with manual switching when several are
   visible.
 - A floating preview positioned correctly over scaled, letterboxed video.
@@ -124,6 +128,16 @@ a confidence threshold and beat the runner-up by a margin, and anything else
 is reported as unknown rather than force-matched to the nearest object. The
 legacy ArUco recognizer remains available (`APP_RECOGNIZER=aruco`) only as a
 dev/test fixture and is not part of the demo.
+
+Confidence is tiered: **high** sightings attach seamlessly, **provisional**
+(medium) sightings are shown as "possible match" and only attach/bank a view
+after the user confirms them, and **low** sightings stay unknown. Sightings
+must repeat across frames before they are published (temporal voting), and a
+confirmed high-confidence track that rotates banks its new angle as an extra
+enrolled view — identity inherited from track continuity, never from a
+fresh guess — so recognition improves the longer an object is looked at.
+Enrolment references are CLAHE-normalised and stored at webcam scale plus
+one half scale, so phone-sized photos and 720p frames meet in the middle.
 
 When multiple enrolled objects are visible, the default active object is the
 one whose center is closest to the frame center. The user can choose another
@@ -191,7 +205,14 @@ return posts in stable server order with replies grouped under their parent.
 | `GET` | `/api/recognition` | Latest frame metadata and timestamped detections |
 | `GET` | `/api/camera/stream` | Shared MJPEG camera stream |
 | `GET` | `/api/objects/by-identity/{identity_key}` | Resolve an enrolled object |
-| `POST` | `/api/objects/enroll` | Enrol a new object from a photo (multipart) |
+| `POST` | `/api/objects/enroll` | Dev/test only: enrol a new object from an uploaded photo (multipart) |
+| `POST` | `/api/objects/enroll-live/scan` | Stage 1 of creating an object by looking: burst-scan into a pending scan (nothing persisted) |
+| `POST` | `/api/objects/enroll-live/scans/{scan_id}/more` | Add another angle burst to a pending scan |
+| `DELETE` | `/api/objects/enroll-live/scans/{scan_id}` | Drop a pending scan |
+| `POST` | `/api/objects/enroll-live` | Stage 2: create the object from a reviewed scan (`{scan_id, title}`) |
+| `POST` | `/api/objects/{object_id}/add-views` | Bank another live burst of views under an existing object |
+| `DELETE` | `/api/objects/{object_id}` | Discard an enrolment (refused if it has posts or is seeded) |
+| `POST` | `/api/recognition/confirm` | Confirm a provisional (medium-confidence) sighting; banks that view |
 | `GET` | `/api/objects/{object_id}/posts` | Fetch a thread with replies and revision timestamp |
 | `POST` | `/api/objects/{object_id}/posts` | Create a top-level post or validated reply |
 | `POST` | `/api/transcriptions` | Transcribe a completed browser audio recording |
@@ -209,12 +230,20 @@ providers are:
   typed composition continues to work.
 - `openai`: sends the browser's completed WebM recording to the official audio
   transcription endpoint using a backend-only API key and configurable model.
+- `faster-whisper`: transcribes locally with one backend-owned Whisper model;
+  no API key or cloud request is used. Model inference runs in a worker thread
+  so it does not block FastAPI's event loop.
 
 The default OpenAI model is `gpt-transcribe`. The current
 [official OpenAI file-transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text)
 recommends that model for completed recordings and documents WebM input and
 `POST /v1/audio/transcriptions`. The older `gpt-4o-mini-transcribe` model is
 deprecated for February 26, 2027, so it is not the default.
+
+The local default is `medium` on CPU with `int8` computation. The model is
+loaded once when the backend starts, so startup is slower and the first run may
+download model files if they are not already cached. This demo laptop already
+has the `Systran/faster-whisper-medium` model cached.
 
 No Meta Muse endpoint will be implemented unless official documentation or a
 provided integration example verifies its URL, authentication, and request
@@ -361,10 +390,15 @@ APP_CAMERA_FIXTURE=
 APP_RECOGNIZER=instance
 APP_ENROLLED_DIR=./data/enrolled
 APP_MARKER_DICTIONARY=DICT_4X4_50
-APP_DETECTION_TTL_MS=750
+APP_DETECTION_TTL_MS=2000
 
 # Transcription
-APP_TRANSCRIPTION_PROVIDER=disabled
+APP_TRANSCRIPTION_PROVIDER=faster-whisper
+APP_WHISPER_MODEL=medium
+APP_WHISPER_DEVICE=cpu
+APP_WHISPER_COMPUTE_TYPE=int8
+
+# Only used when APP_TRANSCRIPTION_PROVIDER=openai
 OPENAI_API_KEY=
 OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe
 ```
@@ -410,6 +444,12 @@ will not fabricate recognition results.
    for another person.
 8. If time allows: move the book and show its thread follows it, then hold up
    an unenrolled book and show Locus says unknown instead of guessing.
+9. Voice beat (webcam/glasses microphone selected in the 🎙 mic picker):
+   push-to-talk and say “open the book”, dictate a post in the open thread,
+   review the transcript, then push-to-talk and say “post it”. Hold up a
+   possible match and say “yes that's it” to confirm it, and say
+   “read the thread” to hear the thread read aloud. Speech alone never
+   publishes — every post needs “post it” or the Post button.
 
 ## Demo vs. the scalable (pitch) version
 
@@ -434,6 +474,6 @@ does not claim to be the AR product.
 - [x] Recording, configurable transcription, editable review, and publishing implemented.
 - [x] Backend tests, frontend tests, strict TypeScript, production build, enrolment
   reference assets, and a zero-vulnerability npm audit completed.
-- [ ] Physical webcam, glasses microphone, live OpenAI credentials, and visual
+- [ ] Physical webcam, glasses microphone, live local transcription, and visual
   browser inspection still require the target demo hardware/environment.
 
