@@ -17,7 +17,7 @@ architecture, setup, verification, and three-minute demo flow.
 
 ## HackTX presentation
 
-[Spots — HackTX 2026 pitch deck](docs/presentations/Spots-HackTX-2026.pptx)
+[Spots — HackTX 2026 pitch deck (latest version)](https://utexas-my.sharepoint.com/:p:/r/personal/sk62334_eid_utexas_edu/Documents/Spots-HackTX-2026.pptx?d=w6ec8edb0e7fe484fa7e131866ae70859&csf=1&web=1&e=TzDPEg)
 
 ## Optional development plans
 
