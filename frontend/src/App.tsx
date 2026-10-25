@@ -8,6 +8,7 @@ import { MessagesView } from "./components/MessagesView";
 import { usePolling } from "./hooks/usePolling";
 import { useThreads } from "./hooks/useThreads";
 import { decorateObjects } from "./scene";
+import { setServerVoice } from "./speech";
 import type { HealthResponse, ObjectSummary, Profile, RecognitionResponse } from "./types";
 
 type View = "ar" | "instagram";
@@ -35,6 +36,8 @@ export default function App() {
     const [loaded, status] = await Promise.all([api.objects(signal), api.health(signal)]);
     const decorated = decorateObjects(loaded);
     setObjects(decorated); setHealth(status);
+    // The assistant speaks in the server's Kokoro voice once it has loaded.
+    setServerVoice(status.speech_provider === "kokoro" && status.speech_status === "ready");
     setSelectedObject(current => decorated.find(item => item.id === current?.id) ?? decorated.find(item => item.marker_id === 7) ?? decorated[0] ?? null);
   }, 5000);
   usePolling(async signal => {

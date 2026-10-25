@@ -4,6 +4,7 @@ import { relativeTime } from "../format";
 import { browserSpeechSupported, useBrowserSpeech } from "../hooks/useBrowserSpeech";
 import { useTranscribedRecorder } from "../hooks/useTranscribedRecorder";
 import { PLACE_NAME } from "../scene";
+import { speakText, speechSupported, stopSpeaking } from "../speech";
 import { flattenPosts, noteCount } from "../threadUtils";
 import type { ObjectSummary, Post, Profile, ThreadResponse } from "../types";
 import { Avatar } from "./Avatar";
@@ -120,9 +121,7 @@ export function NoteCard({
   const firstActionRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const handledAssistantSignal = useRef(0);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const speechStartTimerRef = useRef<number | null>(null);
-  const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
+  const canSpeak = speechSupported();
   const threadReplies = root?.replies ?? [];
   const replyCount = threadReplies.length;
   const displayedNote = step === "thread" ? root ?? note : note;
@@ -134,11 +133,7 @@ export function NoteCard({
     return `${post.author.display_name} replied to ${firstName(root.author)}`;
   };
 
-  useEffect(() => () => {
-    if (speechStartTimerRef.current !== null) window.clearTimeout(speechStartTimerRef.current);
-    utteranceRef.current = null;
-    window.speechSynthesis?.cancel();
-  }, []);
+  useEffect(() => () => stopSpeaking(), []);
   useEffect(() => {
     if (step === "typing") inputRef.current?.focus();
     else firstActionRef.current?.focus();
@@ -169,70 +164,22 @@ export function NoteCard({
       setError(note ? "Read aloud isn't supported by this browser." : "There isn't a note to read yet.");
       return;
     }
-    const synth = window.speechSynthesis;
     if (speaking) {
-      synth.cancel();
-      if (speechStartTimerRef.current !== null) window.clearTimeout(speechStartTimerRef.current);
-      speechStartTimerRef.current = null;
-      utteranceRef.current = null;
+      stopSpeaking();
       setSpeaking(false);
       return;
     }
     setError(null);
-    const utterance = new SpeechSynthesisUtterance(`${note.author.display_name} says: ${note.body}`);
-    utteranceRef.current = utterance;
-    utterance.lang = navigator.language || "en-US";
-    const language = utterance.lang.toLowerCase().split("-")[0];
-    utterance.voice = synth.getVoices().find((voice) => voice.lang.toLowerCase().startsWith(language)) ?? null;
-    utterance.onstart = () => {
-      if (speechStartTimerRef.current !== null) window.clearTimeout(speechStartTimerRef.current);
-      speechStartTimerRef.current = null;
-      setSpeaking(true);
-    };
-    utterance.onend = () => {
-      if (speechStartTimerRef.current !== null) window.clearTimeout(speechStartTimerRef.current);
-      speechStartTimerRef.current = null;
-      utteranceRef.current = null;
-      setSpeaking(false);
-    };
-    utterance.onerror = (event) => {
-      if (speechStartTimerRef.current !== null) window.clearTimeout(speechStartTimerRef.current);
-      speechStartTimerRef.current = null;
-      utteranceRef.current = null;
-      setSpeaking(false);
-      if (event.error !== "canceled" && event.error !== "interrupted") {
-        setError(
-          event.error === "not-allowed"
-            ? "Audio playback is blocked for this site. Allow sound or autoplay in browser settings, then try again."
-            : event.error === "voice-unavailable" || event.error === "language-unavailable"
-              ? "No compatible system voice is available for this note. Install or enable a system voice, then try again."
-              : "The browser couldn't play this note aloud. Check system audio and try again.",
-        );
-      }
-    };
-    // Chrome can drop an utterance queued in the same tick as cancel(), and can be left paused.
-    const speak = () => {
-      synth.resume();
-      synth.speak(utterance);
-    };
-    if (synth.speaking || synth.pending) {
-      synth.cancel();
-      window.setTimeout(speak, 60);
-    } else {
-      speak();
-    }
-    speechStartTimerRef.current = window.setTimeout(() => {
-      if (utteranceRef.current === utterance && !synth.speaking) {
-        utteranceRef.current = null;
-        setSpeaking(false);
-        setError("Read aloud didn't start. Check browser and system audio permissions, then try again.");
-      }
-    }, 1800);
+    setSpeaking(true);
+    // Same voice as the assistant: the server's Kokoro voice when ready, else the browser's.
+    void speakText(`${note.author.display_name} says: ${note.body}`)
+      .catch((speechError: unknown) => setError(speechError instanceof Error ? speechError.message : "Couldn't read this note aloud."))
+      .finally(() => setSpeaking(false));
   };
 
   const startReply = async () => {
     setError(null);
-    window.speechSynthesis?.cancel();
+    stopSpeaking();
     setSpeaking(false);
     if (voiceSource === "backend" && (await recorder.start())) {
       setStep("listening");

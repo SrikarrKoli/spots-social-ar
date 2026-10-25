@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .camera import CameraService
@@ -43,11 +43,13 @@ from .models import (
     RecognitionResponse,
     ScanRequest,
     ScanResponse,
+    SpeechRequest,
     ThreadResponse,
     TranscriptionResponse,
 )
 from .recognition import build_recognizer
 from .repositories import InvalidReplyError, NotFoundError, Repository
+from .speech import SpeechBusy, SpeechUnavailable, build_speech_provider
 from .transcription import (
     TranscriptionError,
     TranscriptionNotConfigured,
@@ -93,6 +95,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_auto_banked_per_identity=(
             app_settings.max_auto_banked_files_per_identity
         ),
+    )
+    speech = build_speech_provider(
+        provider=app_settings.speech_provider,
+        voice=app_settings.speech_voice,
+        espeak_library=app_settings.espeak_library,
+        espeak_data=app_settings.espeak_data,
     )
     transcription = build_transcription_provider(
         provider=app_settings.transcription_provider,
@@ -172,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ]
         camera.load_reference_files(references)
         camera.start()
+        speech.start()
         yield
         camera.stop()
 
@@ -185,6 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.repository = repository
     app.state.camera = camera
     app.state.transcription = transcription
+    app.state.speech = speech
     app.state.assistant = assistant
     app.state.memories = memories
 
@@ -201,6 +211,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             assistant_status=assistant_status,
             assistant_model=assistant.model,
             assistant_message=assistant_message,
+            speech_provider=app.state.speech.name,
+            speech_status=app.state.speech.status,
+            speech_voice=app.state.speech.voice,
+            speech_message=app.state.speech.message,
         )
 
     parser = IntentParser(app_settings.ollama_url, app_settings.assistant_model)
@@ -667,6 +681,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             media_type="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-store"},
         )
+
+    @app.post("/api/speech", response_class=Response)
+    async def speak(payload: SpeechRequest) -> Response:
+        """Render assistant or note text in the configured voice. Never performs actions."""
+        try:
+            audio = await asyncio.to_thread(app.state.speech.synthesize, payload.text)
+        except SpeechBusy as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except SpeechUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        return Response(content=audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/transcriptions", response_model=TranscriptionResponse)
     async def transcribe(audio: UploadFile = File(...)) -> TranscriptionResponse:

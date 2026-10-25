@@ -132,6 +132,22 @@ class HealthResponse(BaseModel):
     assistant_status: str = "unavailable"
     assistant_model: str = ""
     assistant_message: str | None = None
+    # "kokoro" renders the assistant voice on the server; "browser" uses the system voice.
+    speech_provider: str = "browser"
+    speech_status: str = "browser"
+    speech_voice: str | None = None
+    speech_message: str | None = None
+
+
+class SpeechRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=600)
+
+    @field_validator("text")
+    @classmethod
+    def clean_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Nothing to say")
+        return value.strip()
 
 
 class AssistantMessage(BaseModel):

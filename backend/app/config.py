@@ -40,6 +40,10 @@ class Settings:
     whisper_device: str
     whisper_compute_type: str
     camera_name: str | None = None
+    speech_provider: str = "browser"
+    speech_voice: str = "af_heart"
+    espeak_library: Path | None = None
+    espeak_data: Path | None = None
     restaurant_demo_enabled: bool = False
     llm_parser_enabled: bool = True
     assistant_model: str = "qwen3.5:4b"
@@ -52,6 +56,10 @@ class Settings:
             camera_source=os.getenv("APP_CAMERA_SOURCE", "camera").lower(),
             camera_index=int(os.getenv("APP_CAMERA_INDEX", "0")),
             camera_name=os.getenv("APP_CAMERA_NAME") or None,
+            speech_provider=os.getenv("APP_SPEECH_PROVIDER", "kokoro").lower(),
+            speech_voice=os.getenv("APP_SPEECH_VOICE", "af_heart"),
+            espeak_library=_path_env("APP_ESPEAK_LIBRARY", "") if os.getenv("APP_ESPEAK_LIBRARY") else None,
+            espeak_data=_path_env("APP_ESPEAK_DATA", "") if os.getenv("APP_ESPEAK_DATA") else None,
             camera_fixture=_path_env(
                 "APP_CAMERA_FIXTURE", "./markers/markerless-fixture.png"
             ),

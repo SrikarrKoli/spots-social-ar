@@ -89,6 +89,10 @@ export interface HealthResponse {
   assistant_status: string;
   assistant_model: string;
   assistant_message: string | null;
+  speech_provider?: "kokoro" | "browser";
+  speech_status?: "loading" | "ready" | "unavailable" | "browser";
+  speech_voice?: string | null;
+  speech_message?: string | null;
 }
 
 export interface LockedTarget {

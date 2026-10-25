@@ -18,6 +18,12 @@ dependencies = [
   "uvicorn[standard]==0.34.0",
 ]
 
+[project.optional-dependencies]
+voice = [
+    "kokoro>=0.9.4",
+    "soundfile>=0.12",
+]
+
 [dependency-groups]
 dev = [
   "pytest==8.3.4",
