@@ -10,7 +10,7 @@ vi.mock("./MemoryRecall", () => ({ MemoryRecall: () => null }));
 vi.mock("../speech", () => ({ speakText: vi.fn().mockResolvedValue(undefined), stopSpeaking: vi.fn() }));
 vi.mock("../hooks/useVoiceRecorder", () => ({ microphoneErrorMessage: () => "Error", useVoiceRecorder: () => ({ devices: [], deviceId: "", setDeviceId: vi.fn(), stop: vi.fn() }) }));
 const health = { assistant_status: "ready", assistant_model: "local", transcription_status: "configured" } as HealthResponse;
-const base: AssistantResponse = { text: "What should I remember?", model: "local", camera_used: true, camera_source: "camera", captured_at: null, awaiting_description: false, pending_edit_ids: [], pending_edit_body: "", read_aloud: false, awaiting_note: false, awaiting_name: false, pending_title: "", pending_body: "", pending_delete_ids: [], deletion_id: null, deleted_note_ids: [], memory_changed: false, saved_note: null, saved_object: null };
+const base: AssistantResponse = { text: "What should I remember?", model: "local", camera_used: true, camera_source: "camera", captured_at: null, awaiting_description: false, pending_edit_ids: [], pending_edit_body: "", read_aloud: false, awaiting_note: false, awaiting_name: false, awaiting_reply: false, pending_reply_to: null, pending_title: "", pending_body: "", pending_delete_ids: [], deletion_id: null, deleted_note_ids: [], memory_changed: false, saved_note: null, saved_object: null };
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 async function submit(text: string) {
   await waitFor(() => expect((screen.getByRole("textbox", { name: "Ask Spots" }) as HTMLInputElement).disabled).toBe(false));

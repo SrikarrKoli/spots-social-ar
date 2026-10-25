@@ -14,14 +14,15 @@ from conftest import make_test_settings
 from test_memories import mock_capture, payload
 
 
-def test_parser_rejects_invented_comment_name_and_destructive_scope():
+def test_parser_replaces_invented_comment_and_name_with_spoken_words():
     request = AssistantRequest(message='Delete that note')
     assert validate_grounding(ParsedIntent(action='delete_comment', action_phrase='Delete', selector='all'), request, []).selector == 'last'
     request = AssistantRequest(message='Take a note saying It looks nice.')
-    with pytest.raises(AssistantError):
-        validate_grounding(ParsedIntent(action='add_comment', action_phrase='Take a note', comment_spans=['It is a Samsung TV.']), request, [])
-    with pytest.raises(AssistantError):
-        validate_grounding(ParsedIntent(action='add_comment', object_name='Samsung TV', action_phrase='Take a note', comment_spans=['It looks nice.']), request, [])
+    reworded = validate_grounding(ParsedIntent(action='add_comment', action_phrase='Take a note', comment_spans=['It is a Samsung TV.']), request, [])
+    assert reworded.comment_spans == ['It looks nice.']
+    invented = validate_grounding(ParsedIntent(action='add_comment', object_name='Samsung TV', action_phrase='Take a note', comment_spans=['It looks nice.']), request, [])
+    assert invented.object_name == ''
+    assert invented.comment_spans == ['It looks nice.']
 
 
 def test_camera_question_cannot_become_note_even_if_model_misclassifies():
@@ -74,7 +75,7 @@ def test_llm_chat_never_falls_through_to_legacy_save_rules(llm_client, monkeypat
 def test_llm_failure_asks_to_repeat_without_writes(llm_client, monkeypatch):
     monkeypatch.setattr(llm_client.app.state.intent_parser, 'parse', AsyncMock(side_effect=AssistantError('Please repeat. Nothing was changed.')))
     before = llm_client.get('/api/objects/concert-poster/posts').json()
-    response = llm_client.post('/api/assistant', json=payload()).json()
+    response = llm_client.post('/api/assistant', json=payload(message='What about the other one')).json()
     assert response['text'] == 'Please repeat. Nothing was changed.'
     assert response['saved_note'] is None
     assert llm_client.get('/api/objects/concert-poster/posts').json() == before

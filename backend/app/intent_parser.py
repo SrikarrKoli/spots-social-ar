@@ -102,6 +102,14 @@ def validate_grounding(intent: ParsedIntent, payload, objects) -> ParsedIntent:
         sources += [normalized(item.content) for item in payload.history[-6:] if item.role == 'user']
     def grounded(value):
         return not value or any(normalized(value) in source for source in sources if source)
+    if intent.action == 'add_comment':
+        # A reworded comment or invented name falls back to the speaker's exact words.
+        if not grounded(intent.object_name):
+            intent.object_name = ''
+        if not all(grounded(span) for span in intent.comment_spans):
+            from .note_commands import extract_note_content
+            body = extract_note_content(payload.message, [item.model_dump() for item in payload.history])['body']
+            intent.comment_spans = [body] if body else []
     if not all(grounded(span) for span in intent.comment_spans) or not grounded(intent.object_name) or not grounded(intent.matching_text):
         raise AssistantError('I could not confidently separate the name from the comment. Please tell me exactly what the comment should say. Nothing was changed.')
     if intent.action == 'add_comment' and intent.target_object:

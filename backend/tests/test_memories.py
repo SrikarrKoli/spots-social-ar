@@ -51,6 +51,8 @@ def payload(request_id='memory-test-0001', **extra):
 
 def test_save_new_object_note_and_recover_after_restart(client, database_path, monkeypatch):
     extraction = mock_capture(client, monkeypatch)
+    # A new object is named from the camera view, never by asking the wearer.
+    monkeypatch.setattr(client.app.state.assistant, 'answer', AsyncMock(return_value='TV'))
     result = client.post('/api/assistant', json=payload())
     assert result.status_code == 200, result.text
     data = result.json()
@@ -87,24 +89,26 @@ def test_missing_note_content_asks_followup_and_saves_next_turn(client, monkeypa
     extraction = mock_capture(client, monkeypatch)
     extraction.return_value = {'body': '', 'title': 'TV'}
     first = client.post('/api/assistant', json=payload(message='Take a note')).json()
-    assert first['awaiting_description'] is True
+    # One question, for the note itself; the object comes from the camera.
+    assert first['awaiting_note'] is True
+    assert not first['awaiting_description']
     assert first['saved_note'] is None
-    named = client.post('/api/assistant', json=payload('memory-name-1', message='TV', awaiting_description=True)).json()
-    assert named['awaiting_note'] is True
     assert len(client.get('/api/objects').json()) == 2
     extraction.return_value = {'body': 'Great picture quality.', 'title': 'TV'}
-    second = client.post('/api/assistant', json=payload('memory-followup-2', message='Great picture quality.', awaiting_note=True, pending_title=named['pending_title'])).json()
+    second = client.post('/api/assistant', json=payload('memory-followup-2', message='Great picture quality.', awaiting_note=True, pending_title=first['pending_title'])).json()
     assert second['saved_note']['body'] == 'Great picture quality.'
     assert second['awaiting_note'] is False
 
 
-def test_uncertain_and_multiple_objects_never_attach_a_note(client, monkeypatch):
-    extraction = mock_capture(client, monkeypatch, [SimpleNamespace(identity_key='concert-poster', tier='provisional')])
-    assert client.post('/api/assistant', json=payload()).status_code == 409
-    extraction.assert_not_awaited()
+def test_uncertain_match_never_attaches_and_several_matches_pick_one(client, monkeypatch):
+    mock_capture(client, monkeypatch, [SimpleNamespace(identity_key='concert-poster', tier='provisional')])
+    uncertain = client.post('/api/assistant', json=payload()).json()
+    # A provisional match is never trusted; the note starts a new object instead.
+    assert uncertain['saved_object']['id'] not in {'concert-poster', 'favorite-book'}
     mock_capture(client, monkeypatch, [SimpleNamespace(identity_key='concert-poster', tier='high'), SimpleNamespace(identity_key='favorite-book', tier='high')])
-    assert client.post('/api/assistant', json=payload()).status_code == 409
-    assert len(client.get('/api/objects').json()) == 2
+    several = client.post('/api/assistant', json=payload('memory-several-0001')).json()
+    assert several['saved_object']['id'] in {'concert-poster', 'favorite-book'}
+    assert several['saved_note'] is not None
 
 
 def test_no_camera_no_memory_and_no_accidental_text_only_save(client, monkeypatch):
@@ -197,16 +201,15 @@ def test_named_note_followup_retains_name_and_never_generates_number(client, mon
     assert second['saved_note']['body'] == 'It looks really nice.'
 
 
-def test_unnamed_note_holds_content_then_saves_with_spoken_name(client, monkeypatch):
+def test_unnamed_note_saves_at_once_named_from_the_camera(client, monkeypatch):
     mock_capture(client, monkeypatch)
     from backend.app.assistant import LocalAssistant
     monkeypatch.setattr(client.app.state.assistant, 'extract_note', LocalAssistant.extract_note.__get__(client.app.state.assistant))
-    first = client.post('/api/assistant', json=payload(message='Take a note: it looks really nice.')).json()
-    assert first['awaiting_name'] and first['pending_body'] == 'it looks really nice.'
-    assert first['saved_note'] is None
-    second = client.post('/api/assistant', json=payload('name-after-note-001', message='Blue water bottle', awaiting_name=True, pending_body=first['pending_body'])).json()
-    assert second['saved_object']['title'] == 'Blue water bottle'
-    assert second['saved_note']['body'] == 'it looks really nice.'
+    monkeypatch.setattr(client.app.state.assistant, 'answer', AsyncMock(return_value='Blue water bottle'))
+    saved = client.post('/api/assistant', json=payload(message='Take a note: it looks really nice.')).json()
+    assert not saved['awaiting_name']
+    assert saved['saved_object']['title'] == 'Blue water bottle'
+    assert saved['saved_note']['body'] == 'it looks really nice.'
 
 
 def test_combined_rename_note_is_atomic_and_attaches_current_object(client, monkeypatch):

@@ -1,5 +1,4 @@
 """Execute validated intent through existing transactional object/note operations."""
-import asyncio
 from .models import AssistantResponse
 from .note_commands import clean_object_name, object_title
 from .comment_actions import read_comments, edit_comment, resolve_object, flattened
@@ -30,17 +29,14 @@ async def dispatch_intent(service, payload, intent):
     if action == 'add_comment':
         if not body and not payload.pending_body:
             return await service.begin_comment(payload, requested_title=title or intent.target_object or payload.pending_title)
-        if intent.target_object:
-            capture = await asyncio.to_thread(service.camera.memory_capture) if payload.include_camera else None
-            matches = capture[2] if capture else []
-            visible = service.repository.object_by_identity(matches[0].identity_key) if len(matches) == 1 and matches[0].tier == 'high' else None
-            if not visible or words(visible.title) != words(intent.target_object):
-                return respond(f'Point at {intent.target_object} and repeat the comment so I can attach it to the correct object.')
+        # A named saved object gets the note directly; it doesn't need to be in view.
+        target_record = next((obj for obj in service.repository.objects()
+            if words(obj.title) == words(intent.target_object)), None) if intent.target_object else None
         if payload.awaiting_name and payload.pending_body and body != payload.pending_body:
             body = ' '.join(part for part in [payload.pending_body, body] if part)
         return await service.save(payload, parsed_content={
             'body': body, 'title': title or payload.pending_title or object_title(payload.message),
-        }, parsed_name=title)
+        }, parsed_name=title, target=target_record)
     if action == 'read_comments':
         request = payload.model_copy(update={'message': 'Read comments' + target + (' aloud' if intent.read_aloud else '')})
         result = await read_comments(service, request)

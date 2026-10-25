@@ -38,7 +38,7 @@ def test_keyword_request_bypasses_llm_and_does_not_save_command(client, monkeypa
     parser = AsyncMock(side_effect=AssertionError('Parser must not consume bare command'))
     monkeypatch.setattr(client.app.state.intent_parser, 'parse', parser)
     result = client.post('/api/assistant', json={'message':'I want to add a new comment to this new object'}).json()
-    assert result['awaiting_description']
+    assert result['awaiting_note']
     assert not result['saved_note']
     assert 'center' not in result['text'].lower()
     parser.assert_not_awaited()
@@ -52,19 +52,16 @@ def test_recognized_object_asks_for_comment_instead_of_centering(client, monkeyp
     assert not result['saved_note']
 
 
-def test_stable_guess_is_confirmed_before_comment_and_yes_is_not_saved(client, monkeypatch):
+def test_bare_comment_asks_only_for_the_note_never_to_confirm_the_object(client, monkeypatch):
     stable = mock_capture(client, monkeypatch)
     monkeypatch.setattr(client.app.state.camera, 'stable_view', lambda: stable)
     answer = AsyncMock(return_value='Blue water bottle')
     monkeypatch.setattr(client.app.state.assistant, 'answer', answer)
     result = client.post('/api/assistant', json={'message':'Add a new comment'}).json()
-    assert result['awaiting_description']
-    assert result['pending_title'] == 'Blue water bottle'
+    assert result['awaiting_note']
+    assert not result['awaiting_description']
     assert result['saved_note'] is None
-    confirmed = client.post('/api/assistant', json={'message':'yes', 'awaiting_description':True,'pending_title':result['pending_title']}).json()
-    assert confirmed['awaiting_note']
-    assert confirmed['pending_title'] == 'Blue water bottle'
-    assert confirmed['saved_note'] is None
+    answer.assert_not_awaited()
 
 
 def test_steady_view_requires_dwell_rejects_motion_and_expires(client, monkeypatch):
@@ -105,7 +102,7 @@ def test_keyword_start_works_even_when_llm_parser_is_unavailable(database_path, 
         parse = AsyncMock(side_effect=AssertionError("LLM must not be needed for this explicit command"))
         monkeypatch.setattr(client.app.state.intent_parser,'parse',parse)
         result=client.post('/api/assistant',json={'message':'I want to add a new comment to this new object'}).json()
-        assert result['awaiting_description']
+        assert result['awaiting_note']
         parse.assert_not_awaited()
 
 
@@ -123,11 +120,12 @@ async def test_semantic_empty_comment_command_also_starts_draft(client, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_comment_holds_body_while_selecting_name(client, monkeypatch):
+async def test_several_objects_attach_to_the_one_nearest_the_centre(client, monkeypatch):
     from backend.app.models import AssistantRequest
-    mock_capture(client,monkeypatch,[SimpleNamespace(identity_key='concert-poster',tier='high'),SimpleNamespace(identity_key='favorite-book',tier='high')])
+    edge = np.array([[0, 0], [60, 0], [60, 60], [0, 60]], dtype=float)
+    centre = edge + [290, 210]
+    mock_capture(client,monkeypatch,[SimpleNamespace(identity_key='concert-poster',tier='high',corners=edge),SimpleNamespace(identity_key='favorite-book',tier='high',corners=centre)])
     result=await client.app.state.memories.save(AssistantRequest(message='Add a comment saying meet here at six',request_id='held-ambiguous',author_id='guest'),parsed_content={'body':'meet here at six','title':'Remembered object'})
-    assert result.awaiting_name
-    assert result.pending_body == 'meet here at six'
-    assert result.saved_note is None
-    assert 'center' not in result.text.lower()
+    assert result.saved_object.id == 'favorite-book'
+    assert result.saved_note.body == 'meet here at six'
+    assert not result.awaiting_name

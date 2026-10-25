@@ -83,6 +83,11 @@ class Repository:
         assert result is not None
         return result
 
+    def post_object_id(self, post_id: int) -> str | None:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT object_id FROM active_posts WHERE id = ?", (post_id,)).fetchone()
+        return row["object_id"] if row else None
+
     def rename_object(self, object_id: str, title: str) -> ObjectSummary:
         with self.database.connect() as connection:
             result = connection.execute("UPDATE objects SET title = ? WHERE id = ?", (title, object_id))

@@ -110,6 +110,7 @@ class CameraService:
         *,
         source: str,
         camera_index: int,
+        camera_name: str | None = None,
         fixture_path: Path,
         width: int,
         height: int,
@@ -126,6 +127,7 @@ class CameraService:
             raise ValueError("Camera source must be camera, fixture, or disabled")
         self.source = source
         self.camera_index = camera_index
+        self.camera_name = camera_name
         self.fixture_path = fixture_path
         self.requested_width = width
         self.requested_height = height
@@ -192,6 +194,14 @@ class CameraService:
         # macOS permission requests must run on the main thread's run loop.
         # Opening here also avoids OpenCV trying unrelated capture backends.
         if self.source == "camera" and sys.platform == "darwin":
+            if self.camera_name:
+                # Select the named camera (the Brio); never fall back to the built-in one.
+                try:
+                    from .camera_devices import resolve_camera
+                    self.camera_index, self.camera_name = resolve_camera(self.camera_name)
+                except Exception as error:
+                    self._mark_unavailable(str(error))
+                    return
             self._capture = cv2.VideoCapture(self.camera_index, cv2.CAP_AVFOUNDATION)
         self._stop.clear()
         self._threads = [

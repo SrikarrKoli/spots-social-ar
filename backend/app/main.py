@@ -22,7 +22,7 @@ from .intent_dispatch import dispatch_intent
 from .memories import MemoryService, is_note_request, is_bare_comment_request
 from .comment_actions import is_read_request, read_comments, is_edit_request, edit_comment
 from .note_deletion import is_delete_request, is_undo_request, delete_or_restore
-from .note_commands import is_rename_request, is_visual_identification, explicit_name_comment, is_conversation_turn, clean_object_name, is_cancel_request
+from .note_commands import is_rename_request, is_visual_identification, explicit_name_comment, is_conversation_turn, clean_object_name, is_cancel_request, extract_note_content, is_reply_request
 from .config import ROOT, Settings
 from .database import Database, seed_demo
 from .restaurant_demo import seed_restaurant_demo
@@ -76,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     camera = CameraService(
         source=app_settings.camera_source,
         camera_index=app_settings.camera_index,
+        camera_name=app_settings.camera_name,
         fixture_path=app_settings.camera_fixture,
         width=app_settings.camera_width,
         height=app_settings.camera_height,
@@ -195,6 +196,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             camera_source=camera.source,
             transcription_status=transcription.status,
             camera_index=camera.camera_index,
+            camera_name=camera.camera_name,
             llm_parser_enabled=app_settings.llm_parser_enabled,
             assistant_status=assistant_status,
             assistant_model=assistant.model,
@@ -210,8 +212,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if payload.awaiting_description and payload.pending_title and re.fullmatch(r"(?:yes|yeah|yep|correct|right|that's right|that is right|yes please)[.! ]*", payload.message.strip(), re.I):
             return AssistantResponse(text=f"Got it — {payload.pending_title}. What should the comment say?", model=assistant.model,
                 camera_used=False, camera_source=camera.source, awaiting_note=True, pending_title=payload.pending_title)
+        # Replies go into the thread of a note on the object in view, before any note handling.
+        if not is_cancel_request(payload.message) and (
+            is_reply_request(payload.message)
+            or (payload.awaiting_reply and payload.pending_reply_to and not is_conversation_turn(payload.message))
+        ):
+            return await memories.reply(payload)
         if is_bare_comment_request(payload.message):
             return await memories.begin_comment(payload)
+        # Spoken notes skip the LLM parser: the wearer's own words are saved verbatim,
+        # so a model can never reword them or refuse to separate name from comment.
+        if not is_cancel_request(payload.message) and (
+            (payload.awaiting_note and not is_conversation_turn(payload.message))
+            or (is_note_request(payload.message, history) and not is_rename_request(payload.message)
+                and extract_note_content(payload.message, history)["body"])
+        ):
+            return await memories.save(payload)
         if app_settings.llm_parser_enabled:
             try:
                 intent = await parser.parse(payload, repository.objects())

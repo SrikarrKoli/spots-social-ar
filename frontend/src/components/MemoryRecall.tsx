@@ -14,7 +14,7 @@ export function MemoryRecall({ object, revision }: { object: ObjectSummary | nul
   if (!object || thread?.object.id !== object.id || !thread.posts.length) return null;
   return <section className="memory-recall" aria-label="Memories for the object in view" aria-live="polite">
     <strong>Remembered · {object.title}</strong>
-    {thread.posts.slice(-3).map((post) => <p key={post.id}>{post.body}</p>)}
+    {thread.posts.slice(-3).map((post) => <p key={post.id}>{post.body}{post.replies.length > 0 && <small> · {post.replies.length} {post.replies.length === 1 ? "reply" : "replies"}</small>}</p>)}
     <small>{thread.posts.length} saved note{thread.posts.length === 1 ? "" : "s"}. All remain available in Saved objects &amp; memories.</small>
   </section>;
 }

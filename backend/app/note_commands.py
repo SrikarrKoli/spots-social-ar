@@ -35,7 +35,7 @@ def extract_note_content(message: str, history: list[dict], *, followup: bool = 
     body = ""
     # Punctuation and command syntax define content; source text remains verbatim.
     saying = re.search(r"\b(?:saying|that says|which says|with text|with the words|to say)\s*[:,-]?\s+(.+)", text, re.I | re.S)
-    remember = re.search(r"\bremember\s+(?:that|this)\s*[:,-]?\s+(.+)", text, re.I | re.S)
+    remember = re.search(r"\b(?:remember\s+(?:that|this)|(?:jot|write|note)\s+down(?:\s+that)?)\s*[:,-]?\s+(.+)", text, re.I | re.S)
     command = re.search(COMMAND, text, re.I)
     if saying:
         body = saying.group(1).strip()
@@ -80,6 +80,43 @@ def extract_note_content(message: str, history: list[dict], *, followup: bool = 
                     body = re.sub(r'^(?:suggested note|draft|your note)\s*:\s*', '', item['content'], flags=re.I)
                     return {"body": body.strip(' "“”'), "title": object_title(body)}
     return {"body": "", "title": naming or object_title(text)}
+
+
+REPLY = r"(?:reply|respond|answer|write back)"
+REPLY_LEAD = r"(?:(?:okay|ok|hey|please|spots|can you|could you|i want to|i'd like to|i would like to|let me|let's)[, ]+)*"
+
+
+def is_reply_request(message: str) -> bool:
+    """A spoken reply to a note, e.g. "reply to Vishal saying I'm in"."""
+    text = message.strip().lower().replace("’", "'")
+    if re.search(r"\b(?:don't|do not|never|cancel)\b", text):
+        return False
+    return bool(re.match(rf"^{REPLY_LEAD}{REPLY}\b", text))
+
+
+def split_reply(message: str) -> tuple[str, str]:
+    """Split a reply into who it's for (possibly empty) and its exact spoken body."""
+    text = message.strip().replace("’", "'")
+    command = re.match(rf"^{REPLY_LEAD}{REPLY}\b", text, re.I)
+    rest = text[command.end():] if command else text
+    rest = re.sub(r"^\s*(?:back\b)?\s*[,:;—-]?\s*", "", rest, flags=re.I)
+    separator = re.search(r"\s*(?:\b(?:saying|that says|and say|and tell (?:them|him|her))\b|[:—])\s*", rest, re.I)
+    if separator:
+        target, body = rest[:separator.start()], rest[separator.end():]
+    elif re.match(r"^to\b", rest, re.I):
+        # "reply to Vishal thanks": the caller resolves the name against the thread.
+        target, body = rest, ""
+    else:
+        target, body = "", rest
+    target = re.sub(r"^to\s+", "", target.strip(" ,"), flags=re.I)
+    body = re.sub(r"\s+(?:for me\s+)?please[.!?]*$", "", body.strip(), flags=re.I)
+    return target.strip(" ,"), body.strip(' "“”')
+
+
+def named_target(message: str) -> str:
+    """The object a note explicitly names, e.g. "a note on my water bottle saying …"."""
+    match = re.search(rf"{COMMAND}\s+(?:on|about|for|to)\s+(.+?)\s*(?:\bsaying\b|\bthat says\b|[:,—-])", message, re.I)
+    return clean_object_name(match.group(1)) if match else ""
 
 
 def is_rename_request(message: str) -> bool:

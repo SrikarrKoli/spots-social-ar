@@ -22,6 +22,8 @@ export function AssistantPanel({ health, object, authorId, onSaved, lens = false
   const pendingMemory = useRef({ awaitingName: false, pendingTitle: "", pendingBody: "" });
   const deletion = useRef<{ pendingDeleteIds: number[]; lastNoteId?: number; deletionId?: string }>({ pendingDeleteIds: [] });
   const commentState = useRef({ awaitingDescription: false, pendingEditIds: [] as number[], pendingEditBody: "" });
+  // After a bare "reply", the next utterance is posted under this note.
+  const replyState = useRef<{ awaitingReply: boolean; pendingReplyTo?: number }>({ awaitingReply: false });
   const [memoryRevision, setMemoryRevision] = useState(0);
   const [awaitingName, setAwaitingName] = useState(false);
   const [savedNote, setSavedNote] = useState<{ note: Post; object: ObjectSummary } | null>(null);
@@ -81,11 +83,12 @@ export function AssistantPanel({ health, object, authorId, onSaved, lens = false
     if (pendingRequest.current?.text !== text) pendingRequest.current = { text, id: crypto.randomUUID() };
     setRetryText(text);
     const result = await api.askAssistant(text, previous, options.objectId, options.camera, controller.current.signal,
-      { authorId, requestId: pendingRequest.current.id, awaitingNote: awaitingNoteRef.current, ...pendingMemory.current, ...deletion.current, ...commentState.current });
+      { authorId, requestId: pendingRequest.current.id, awaitingNote: awaitingNoteRef.current, ...pendingMemory.current, ...deletion.current, ...commentState.current, ...replyState.current });
     if (generation.current !== token) return;
     pendingRequest.current = null;
     setRetryText(null);
     commentState.current = { awaitingDescription: result.awaiting_description, pendingEditIds: result.pending_edit_ids ?? [], pendingEditBody: result.pending_edit_body ?? "" };
+    replyState.current = { awaitingReply: result.awaiting_reply, pendingReplyTo: result.pending_reply_to ?? undefined };
     awaitingNoteRef.current = result.awaiting_note;
     setAwaitingNote(result.awaiting_note);
     setAwaitingName(result.awaiting_name);
@@ -189,7 +192,7 @@ export function AssistantPanel({ health, object, authorId, onSaved, lens = false
   if (lens) return <section className={`voice-hud voice-hud--${phase}`} aria-label="Meta AI conversation">
     <header className="voice-hud__header"><span className="voice-hud__orb" aria-hidden="true" /><strong>{phase === "listening" ? "Listening" : phase === "starting" ? "Opening microphone" : phase === "thinking" ? "Thinking" : phase === "transcribing" ? "Transcribing" : phase === "speaking" ? "Meta AI" : "Meta AI"}</strong><button aria-label="Close voice conversation" onClick={onClose}>×</button></header>
     <div className="voice-hud__captions" aria-live="polite" ref={messagesRef}>
-      {!messages.length && !error && <p className="voice-hud__hint">{phase === "listening" ? "Go ahead. I’m listening…" : phase === "starting" ? "Getting ready…" : initialInput ? "Ask about this object." : "Ask about what you see, or say “take a note”."}</p>}
+      {!messages.length && !error && <p className="voice-hud__hint">{phase === "listening" ? "Go ahead. I’m listening…" : phase === "starting" ? "Getting ready…" : initialInput ? "Ask about this object." : "Ask about what you see, say “take a note”, or “reply saying …” to a note."}</p>}
       {messages.slice(-2).map((message,index) => <p className={`voice-hud__caption voice-hud__caption--${message.role}`} key={index}><span>{message.role === "user" ? "You" : "Meta AI"}</span>{message.content}</p>)}
       {phase === "transcribing" && <p className="voice-hud__hint">Turning your words into text…</p>}
       {phase === "thinking" && <p className="voice-hud__hint">Thinking…</p>}
@@ -222,7 +225,7 @@ export function AssistantPanel({ health, object, authorId, onSaved, lens = false
       <MemoryRecall object={object} revision={(savedNote?.note.id ?? 0) + memoryRevision} />
       {savedNote && <div className="memory-saved" role="status"><strong>Saved · {savedNote.object.title}</strong><p>{savedNote.note.body}</p><small>Stored on this Mac. Find it again in Saved objects & memories.</small></div>}
       <div className="thread-body assistant-messages" aria-live="polite" ref={messagesRef}>
-        {messages.length === 0 && <div className="panel-state">Try “What am I looking at?” then ask a follow-up.<br />Say “take a note” to save a memory. Ordinary questions stay in this chat.</div>}
+        {messages.length === 0 && <div className="panel-state">Try “What am I looking at?” then ask a follow-up.<br />Say “take a note” to save a memory, or “reply saying …” to answer a note in view. Ordinary questions stay in this chat.</div>}
         {messages.map((message, index) => <article className={`assistant-message assistant-message--${message.role}`} key={index}><strong>{message.role === "user" ? "You" : lens ? "Meta AI" : "Spots"}</strong><p>{message.content}</p></article>)}
         {busy && <p className="assistant-phase" role="status">{({ idle: "", starting: "Opening microphone…", listening: handsFree ? "Listening… pause when you finish your question." : "Listening… press Finish question when ready.", transcribing: "Turning your speech into text…", thinking: "Looking and thinking…", speaking: "Spots is speaking…" })[phase]}</p>}
 
@@ -247,7 +250,7 @@ export function AssistantPanel({ health, object, authorId, onSaved, lens = false
           <input aria-label="Ask Spots" placeholder="Or type a question…" value={input} maxLength={2000} disabled={busy} onChange={(e) => setInput(e.target.value)} />
           <button className="button button--primary" disabled={!ready || busy || !input.trim()}>Ask</button>
         </form>
-        <button className="text-button" disabled={busy} onClick={() => { history.current = []; setMessages([]); setLastContext(""); awaitingNoteRef.current = false; setAwaitingNote(false); setAwaitingName(false); pendingMemory.current = { awaitingName: false, pendingTitle: "", pendingBody: "" }; pendingRequest.current = null; setRetryText(null); setSavedNote(null); deletion.current = { pendingDeleteIds: [] }; commentState.current = { awaitingDescription: false, pendingEditIds: [], pendingEditBody: "" }; }}>New conversation</button>
+        <button className="text-button" disabled={busy} onClick={() => { history.current = []; setMessages([]); setLastContext(""); awaitingNoteRef.current = false; setAwaitingNote(false); setAwaitingName(false); pendingMemory.current = { awaitingName: false, pendingTitle: "", pendingBody: "" }; pendingRequest.current = null; setRetryText(null); setSavedNote(null); deletion.current = { pendingDeleteIds: [] }; commentState.current = { awaitingDescription: false, pendingEditIds: [], pendingEditBody: "" }; replyState.current = { awaitingReply: false }; }}>New conversation</button>
       </div>
     </aside>
   );

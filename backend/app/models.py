@@ -122,6 +122,7 @@ class RecognitionResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    camera_name: str | None = None
     status: Literal["ok"] = "ok"
     camera_status: str
     camera_source: str
@@ -156,6 +157,9 @@ class AssistantRequest(BaseModel):
     deletion_id: str | None = Field(default=None, max_length=100)
     pending_title: str = Field(default="", max_length=80)
     pending_body: str = Field(default="", max_length=500)
+    # Set after a bare "reply": the next utterance is posted under this note.
+    awaiting_reply: bool = False
+    pending_reply_to: int | None = None
 
     @field_validator("message")
     @classmethod
@@ -182,6 +186,8 @@ class AssistantResponse(BaseModel):
     deletion_id: str | None = Field(default=None, max_length=100)
     pending_title: str = Field(default="", max_length=80)
     pending_body: str = Field(default="", max_length=500)
+    awaiting_reply: bool = False
+    pending_reply_to: int | None = None
     deleted_note_ids: list[int] = Field(default_factory=list)
     memory_changed: bool = False
     saved_note: Post | None = None
