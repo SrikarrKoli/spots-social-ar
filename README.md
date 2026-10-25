@@ -593,3 +593,9 @@ object recognizer. Registered object identity still comes from the existing
 feature matcher. Low-texture objects and visually identical copies remain
 recognition limitations. Native Meta display integration, shared 3D anchors,
 Instagram integration and interest recommendations remain future work.
+
+## Combined Instagram and live camera interface
+
+The Phone view uses the Instagram-style inbox from `vishal-branch`. Select a saved object in the top control to read its persistent notes and post comments; “View through glasses” opens the corresponding live or demo view. Talk to Spots uses the existing local LLM and Whisper for naming, saving, reading, editing, and deleting memories. The backend exclusively owns the Brio camera; the browser displays its MJPEG stream.
+
+The optional restaurant scene uses separate `demo-menu-*` objects, enabled by `APP_RESTAURANT_DEMO=true` (default). Set it to false to omit these fixtures on a new database. Demo group conversations are illustrative browser-session fixtures; real Instagram messaging and autonomous group creation are not connected. Existing object data is retained. Build with `cd frontend && npm ci && npm run build`, then start the backend as described above.

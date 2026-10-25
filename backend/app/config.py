@@ -39,6 +39,7 @@ class Settings:
     whisper_model: str
     whisper_device: str
     whisper_compute_type: str
+    restaurant_demo_enabled: bool = False
     llm_parser_enabled: bool = True
     assistant_model: str = "qwen3.5:4b"
     ollama_url: str = "http://127.0.0.1:11434"
@@ -93,6 +94,7 @@ class Settings:
             whisper_compute_type=os.getenv(
                 "APP_WHISPER_COMPUTE_TYPE", "int8"
             ),
+            restaurant_demo_enabled=os.getenv("APP_RESTAURANT_DEMO", "true").lower() == "true",
             llm_parser_enabled=os.getenv("APP_LLM_PARSER_ENABLED", "true").lower() == "true",
             assistant_model=os.getenv("APP_ASSISTANT_MODEL", "qwen3.5:4b"),
             ollama_url=os.getenv("APP_OLLAMA_URL", "http://127.0.0.1:11434"),

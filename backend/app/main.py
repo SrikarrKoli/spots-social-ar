@@ -25,6 +25,7 @@ from .note_deletion import is_delete_request, is_undo_request, delete_or_restore
 from .note_commands import is_rename_request, is_visual_identification, explicit_name_comment, is_conversation_turn, clean_object_name, is_cancel_request
 from .config import ROOT, Settings
 from .database import Database, seed_demo
+from .restaurant_demo import seed_restaurant_demo
 from .models import (
     AddViewsResponse,
     AssistantRequest,
@@ -160,6 +161,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         seed_demo(database)
+        if app_settings.restaurant_demo_enabled:
+            seed_restaurant_demo(database)
         references = [
             (identity_key, ROOT / reference_path)
             for identity_key, reference_path in repository.object_references(
@@ -623,6 +626,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if resolved is not None:
                 detection["object"], detection["preview"] = resolved
         return RecognitionResponse.model_validate(snapshot)
+
+    @app.get("/api/objects/{object_id}/reference")
+    async def object_reference(object_id: str) -> FileResponse:
+        paths = await asyncio.to_thread(repository.object_reference_paths, object_id)
+        for stored in paths:
+            path = (ROOT / stored).resolve()
+            allowed = (app_settings.enrolled_dir.resolve(), (ROOT / "objects").resolve())
+            if any(path.is_relative_to(root) for root in allowed) and path.is_file():
+                return FileResponse(path, headers={"Cache-Control": "private, max-age=60"})
+        raise HTTPException(status_code=404, detail="No saved object image")
 
     @app.get("/api/camera/stream")
     async def camera_stream() -> StreamingResponse:

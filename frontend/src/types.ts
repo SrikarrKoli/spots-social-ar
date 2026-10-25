@@ -3,9 +3,12 @@ export interface Profile {
   display_name: string;
   initials: string;
   color: string;
+  // Demo-only portrait; real profiles fall back to initials.
+  photo?: string;
 }
 
 export interface ObjectSummary {
+  marker_id?: number;
   id: string;
   identity_key: string;
   identity_kind: string;
