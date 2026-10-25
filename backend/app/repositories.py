@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 
 from .database import Database
 from .models import ConversationPreview, ObjectSummary, Post, Profile, ThreadResponse
@@ -37,6 +38,107 @@ class Repository:
                 "ORDER BY CASE id WHEN 'guest' THEN 1 ELSE 0 END, display_name"
             ).fetchall()
         return [Profile.model_validate(dict(row)) for row in rows]
+
+    def memory_by_request(self, request_id: str) -> Post | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT p.*, u.display_name, u.initials, u.color FROM posts p "
+                "JOIN users u ON u.id = p.author_id WHERE p.client_request_id = ?",
+                (request_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Post(id=row["id"], object_id=row["object_id"], author=_profile(row),
+                    body=row["body"], created_at=datetime.fromisoformat(row["created_at"]),
+                    parent_post_id=row["parent_post_id"])
+
+    def save_memory(self, *, object_id: str, title: str, reference_path: str | None,
+                    author_id: str, body: str, request_id: str, rename_title: str | None = None) -> Post:
+        """Commit a newly enrolled object and its note together; no note expiry."""
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT id FROM posts WHERE client_request_id = ?", (request_id,),
+            ).fetchone()
+            if not existing:
+                if connection.execute("SELECT 1 FROM users WHERE id = ?", (author_id,)).fetchone() is None:
+                    raise NotFoundError("Profile not found")
+                if reference_path:
+                    connection.execute(
+                        "INSERT INTO objects(id, identity_key, identity_kind, reference_path, title) "
+                        "VALUES (?, ?, 'instance', ?, ?)",
+                        (object_id, object_id, reference_path, title),
+                    )
+                    connection.execute(
+                        "INSERT INTO object_fingerprints(object_id, kind, reference_path) VALUES (?, 'reference-image', ?)",
+                        (object_id, reference_path),
+                    )
+                if rename_title:
+                    connection.execute("UPDATE objects SET title = ? WHERE id = ?", (rename_title, object_id))
+                connection.execute(
+                    "INSERT INTO posts(object_id, author_id, body, created_at, client_request_id) VALUES (?, ?, ?, ?, ?)",
+                    (object_id, author_id, body, datetime.now(UTC).isoformat(), request_id),
+                )
+        result = self.memory_by_request(request_id)
+        assert result is not None
+        return result
+
+    def rename_object(self, object_id: str, title: str) -> ObjectSummary:
+        with self.database.connect() as connection:
+            result = connection.execute("UPDATE objects SET title = ? WHERE id = ?", (title, object_id))
+            if result.rowcount != 1:
+                raise NotFoundError("Object not found")
+        return self.object_by_id(object_id)
+
+    def edit_note(self, post_id: int, author_id: str, body: str, request_id: str) -> Post:
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute("SELECT * FROM note_edits WHERE request_id = ?", (request_id,)).fetchone()
+            if previous and (previous['post_id'] != post_id or previous['author_id'] != author_id or previous['body'] != body):
+                raise ValueError("This edit request was already used for another comment.")
+            row = connection.execute("SELECT * FROM active_posts WHERE id = ? AND author_id = ?", (post_id, author_id)).fetchone()
+            if row is None:
+                raise ValueError("That comment is no longer available in this profile.")
+            if not previous:
+                connection.execute("INSERT INTO note_edits(request_id, post_id, author_id, previous_body, body, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (request_id, post_id, author_id, row['body'], body, datetime.now(UTC).isoformat()))
+                connection.execute("UPDATE posts SET body = ? WHERE id = ?", (body, post_id))
+            result = connection.execute("SELECT p.*, u.display_name, u.initials, u.color FROM active_posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?", (post_id,)).fetchone()
+        return Post(id=result['id'], object_id=result['object_id'], author=_profile(result), body=result['body'],
+            created_at=datetime.fromisoformat(result['created_at']), parent_post_id=result['parent_post_id'])
+
+    def deletion_result(self, request_id: str) -> dict | None:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT * FROM note_deletions WHERE request_id = ?", (request_id,)).fetchone()
+        return dict(row) if row else None
+
+    def delete_notes(self, object_id: str, post_ids: list[int], author_id: str, request_id: str) -> dict:
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM note_deletions WHERE request_id = ?", (request_id,)).fetchone() is None:
+                marks = ','.join('?' for _ in post_ids)
+                rows = connection.execute(f"SELECT id FROM active_posts WHERE object_id = ? AND author_id = ? AND id IN ({marks})", (object_id, author_id, *post_ids)).fetchall()
+                if len(rows) != len(set(post_ids)):
+                    raise NotFoundError("That note is no longer available in this profile.")
+                children = connection.execute(f"SELECT id FROM active_posts WHERE parent_post_id IN ({marks})", post_ids).fetchall()
+                ids = sorted(set(post_ids + [row['id'] for row in children]))
+                connection.execute("INSERT INTO note_deletions(request_id, author_id, object_id, post_ids, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (request_id, author_id, object_id, json.dumps(ids), datetime.now(UTC).isoformat()))
+                connection.executemany("INSERT INTO deleted_notes(post_id, request_id) VALUES (?, ?)", [(item, request_id) for item in ids])
+        return self.deletion_result(request_id)
+
+    def undo_note_deletion(self, author_id: str, request_id: str | None) -> dict | None:
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if request_id:
+                row = connection.execute("SELECT * FROM note_deletions WHERE request_id = ? AND author_id = ?", (request_id, author_id)).fetchone()
+            else:
+                row = connection.execute("SELECT * FROM note_deletions WHERE author_id = ? AND restored = 0 ORDER BY created_at DESC LIMIT 1", (author_id,)).fetchone()
+            if row is None:
+                return None
+            connection.execute("DELETE FROM deleted_notes WHERE request_id = ?", (row['request_id'],))
+            connection.execute("UPDATE note_deletions SET restored = 1 WHERE request_id = ?", (row['request_id'],))
+        return dict(row)
 
     def object_by_identity(self, identity_key: str) -> ObjectSummary | None:
         with self.database.connect() as connection:
@@ -95,12 +197,12 @@ class Repository:
                        o.description, p.body AS preview_body,
                        u.display_name AS preview_author,
                        COALESCE((
-                           SELECT COUNT(*) FROM posts r
+                           SELECT COUNT(*) FROM active_posts r
                            WHERE r.parent_post_id = p.id
                        ), 0) AS reply_count
                 FROM objects o
-                LEFT JOIN posts p ON p.id = (
-                    SELECT candidate.id FROM posts candidate
+                LEFT JOIN active_posts p ON p.id = (
+                    SELECT candidate.id FROM active_posts candidate
                     WHERE candidate.object_id = o.id
                       AND candidate.parent_post_id IS NULL
                     ORDER BY candidate.created_at DESC, candidate.id DESC
@@ -185,7 +287,7 @@ class Repository:
     def post_count(self, object_id: str) -> int:
         with self.database.connect() as connection:
             row = connection.execute(
-                "SELECT COUNT(*) AS n FROM posts WHERE object_id = ?", (object_id,)
+                "SELECT COUNT(*) AS n FROM active_posts WHERE object_id = ?", (object_id,)
             ).fetchone()
         return int(row["n"])
 
@@ -236,7 +338,7 @@ class Repository:
                 """
                 SELECT p.id, p.object_id, p.body, p.created_at, p.parent_post_id,
                        p.author_id, u.display_name, u.initials, u.color
-                FROM posts p JOIN users u ON u.id = p.author_id
+                FROM active_posts p JOIN users u ON u.id = p.author_id
                 WHERE p.object_id = ?
                 ORDER BY p.created_at, p.id
                 """,
@@ -305,7 +407,7 @@ class Repository:
             else:
                 if parent_post_id is not None:
                     parent = connection.execute(
-                        "SELECT object_id, parent_post_id FROM posts WHERE id = ?",
+                        "SELECT object_id, parent_post_id FROM active_posts WHERE id = ?",
                         (parent_post_id,),
                     ).fetchone()
                     if parent is None:
@@ -339,7 +441,7 @@ class Repository:
                 """
                 SELECT p.id, p.object_id, p.body, p.created_at, p.parent_post_id,
                        p.author_id, u.display_name, u.initials, u.color
-                FROM posts p JOIN users u ON u.id = p.author_id
+                FROM active_posts p JOIN users u ON u.id = p.author_id
                 WHERE p.id = ?
                 """,
                 (post_id,),

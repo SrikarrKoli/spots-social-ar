@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { AssistantPanel } from "./components/AssistantPanel";
 import { CameraStage } from "./components/CameraStage";
 import { ThreadPanel } from "./components/ThreadPanel";
 import { Avatar } from "./components/Avatar";
@@ -9,6 +10,7 @@ import type { Detection, HealthResponse, ObjectSummary, Profile, RecognitionResp
 const NO_DETECTIONS: Detection[] = [];
 
 export default function App() {
+  const [mode, setMode] = useState<"assistant" | "notes">("assistant");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [objects, setObjects] = useState<ObjectSummary[]>([]);
   const [profileId, setProfileId] = useState("maya");
@@ -65,6 +67,11 @@ export default function App() {
     }
   }, 250);
 
+  usePolling(async (signal) => {
+    const [nextHealth, nextObjects] = await Promise.all([api.health(signal), api.objects(signal)]);
+    setHealth(nextHealth); setObjects(nextObjects);
+  }, 5000);
+
   const currentProfile = useMemo(
     () => profiles.find((profile) => profile.id === profileId) ?? profiles[0] ?? null,
     [profileId, profiles],
@@ -92,15 +99,15 @@ export default function App() {
         <div className="brand">
           <div className="brand-mark" aria-hidden="true"><span /><span /><span /></div>
           <div>
-            <strong>LOCUS</strong>
-            <small>CONVERSATIONS, FOUND</small>
+            <strong>SPOTS</strong>
+            <small>EVERY PLACE HAS STORIES</small>
           </div>
         </div>
 
         <div className="topbar__center">
           <span className="status-pill">
             <i className={health?.camera_status === "ready" ? "is-ready" : ""} />
-            {health?.camera_source === "fixture" ? "FIXTURE ONLINE" : health?.camera_status === "ready" ? "GLASSES ONLINE" : "CAMERA OFFLINE"}
+            {health?.camera_source === "fixture" ? "FIXTURE ONLINE" : health?.camera_status === "ready" ? "CAMERA ONLINE" : "CAMERA OFFLINE"}
           </span>
         </div>
 
@@ -115,19 +122,28 @@ export default function App() {
         </label>
       </header>
 
+      <nav className="mode-switch" aria-label="Experience">
+        {mode === "notes" && <button onClick={() => setMode("assistant")}>Back to conversation</button>}
+        <select aria-label="Saved objects and memories" value="" onChange={(event) => {
+          const found = objects.find((item) => item.id === event.target.value);
+          if (found) { setSelectedObject(found); setMode("notes"); }
+        }}><option value="">Saved objects &amp; memories</option>{objects.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+        <span>Camera {health?.camera_index ?? "…"} · Mac sound output</span>
+      </nav>
       <div className="workspace">
         <CameraStage
           recognition={recognition}
           recognitionError={recognitionError}
           manualIdentityKey={manualIdentityKey}
           onManualIdentity={setManualIdentityKey}
-          onOpenObject={(detection) => detection.object && setSelectedObject(detection.object)}
+          onOpenObject={(detection) => { if (detection.object) { setSelectedObject(detection.object); setMode("notes"); } }}
           onConfirmIdentity={(detection) => {
             void api.confirmIdentity(detection.identity_key).catch(() => undefined);
           }}
           enrollmentActive={enrollmentActive}
+          memoryMode={mode === "assistant"}
         />
-        <ThreadPanel
+        {mode === "assistant" ? <AssistantPanel health={health} object={recognition?.detections.find((item) => item.tier === "high" && item.object)?.object ?? null} authorId={profileId} onSaved={(saved) => { handleObjectEnrolled(saved); setSelectedObject(saved); }} /> : <ThreadPanel
           object={selectedObject}
           availableObjects={objects}
           onSelectObject={setSelectedObject}
@@ -138,12 +154,12 @@ export default function App() {
           onConfirmProvisional={handleConfirmProvisional}
           profile={currentProfile}
           transcriptionConfigured={health?.transcription_status === "configured"}
-        />
+        />}
       </div>
 
       <footer className="app-footer">
         <span><i /> Recognition expires when an enrolled object leaves view</span>
-        <span>LOCUS PROTOTYPE · LOCAL DEMO</span>
+        <span>SPOTS PROTOTYPE · LOCAL DEMO</span>
       </footer>
     </main>
   );

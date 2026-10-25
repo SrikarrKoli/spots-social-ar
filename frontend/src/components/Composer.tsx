@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { microphoneErrorMessage, useVoiceRecorder } from "../hooks/useVoiceRecorder";
-import { stopSpeaking } from "../speech";
+import { speakText, stopSpeaking } from "../speech";
 import type { LockedTarget, Profile } from "../types";
 
 type Phase = "editing" | "recording" | "transcribing" | "saving";
@@ -12,7 +12,7 @@ export interface ExternalTranscript {
 }
 
 export interface VoiceDraftAction {
-  type: "post" | "cancel" | "retry";
+  type: "post" | "cancel" | "retry" | "read";
   nonce: number;
 }
 
@@ -63,7 +63,9 @@ export function Composer({
   useEffect(() => {
     if (!voiceAction || voiceAction.nonce === lastActionNonce.current) return;
     lastActionNonce.current = voiceAction.nonce;
-    if (voiceAction.type === "post") {
+    if (voiceAction.type === "read") {
+      void speakText(`Your draft: ${body}. Say post it to publish, or retry to record again.`).catch((e: Error) => setError(e.message));
+    } else if (voiceAction.type === "post") {
       void publishRef.current();
     } else if (voiceAction.type === "cancel") {
       onCancel();
@@ -112,12 +114,16 @@ export function Composer({
     }
   };
 
+  const savingRef = useRef(false);
   const publish = async () => {
+    if (savingRef.current) return;
     const cleaned = body.trim();
     if (!cleaned) {
       setError("Write or record a message before posting.");
       return;
     }
+    savingRef.current = true;
+    stopSpeaking();
     setPhase("saving");
     setError(null);
     try {
@@ -135,7 +141,7 @@ export function Composer({
           : "Could not save. Your draft is still here.",
       );
       setPhase("editing");
-    }
+    } finally { savingRef.current = false; }
   };
   publishRef.current = publish;
 
@@ -221,6 +227,9 @@ export function Composer({
       )}
       {error && <p className="form-error" role="alert">{error}</p>}
 
+      {body.trim() && <button className="text-button" disabled={busy || phase === "recording"} onClick={() => {
+        void speakText(`Your draft: ${body}. Say post it to publish, or retry to record again.`).catch((e: Error) => setError(e.message));
+      }}>Read my draft aloud</button>}
       <div className="composer__actions">
         <button className="button button--ghost" onClick={onCancel} disabled={busy || phase === "recording"}>
           Cancel

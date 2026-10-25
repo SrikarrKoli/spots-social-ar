@@ -165,7 +165,7 @@ class FasterWhisperTranscriptionProvider:
 
     def _transcribe_sync(self, audio: bytes) -> str:
         options: dict[str, object] = {
-            "beam_size": 1,
+            "beam_size": 5,
             "vad_filter": True,
             "without_timestamps": True,
         }

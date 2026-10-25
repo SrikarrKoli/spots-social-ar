@@ -2,6 +2,96 @@
 
 Last updated: 2026-10-25
 
+## Local LLM parsing update
+
+- Added a text-only structured-intent stage using local Ollama qwen3.5:4b.
+  It receives transcript, recent context, and pending state, then dispatches
+  add/name/read/edit/delete/undo actions through existing transaction handlers.
+- APP_LLM_PARSER_ENABLED=true is the default and active in this Mac's .env.
+  LLM chat bypasses legacy write rules; parser errors never trigger regex writes.
+- Source-grounded comment/name fields, noun normalization, action scope checks,
+  and actual numbered selections constrain writes and prevent invented content.
+- Downloaded and tested the 4B model after the 2B model was inconsistent.
+  All 12 real-model phrase cases passed. Tests cover invalid output/no writes,
+  ordinary conversation/no writes, unusual phrasing, editing, readback, and scope.
+- Opt-in evaluation: uv run python -m scripts.evaluate_intent_parser.
+
+## Comment add/read/edit correction
+
+- Separated object description from note dictation; questions and setup chatter
+  cannot become a post while any comment/name/edit prompt is pending.
+- Added direct database readback of all saved notes/replies, with explicit read
+  aloud overriding the automatic-speech toggle.
+- Added transactional/idempotent voice comment editing, with ambiguity choices,
+  held replacement text, author checks, audit history, and preserved replies.
+- Naming alone enrolls an object without manufacturing a comment.
+
+## Noun phrase title correction
+
+- Added local English dependency parsing, pinned spaCy/model dependencies, and
+  noun-only title validation on naming, description, pending titles, and saves.
+- Predicate/provenance and spoken “say …” text go into comments; command words
+  never become object titles. Exact jersey and bottle screenshot cases covered.
+- Repaired the two existing malformed titles and split bottle comment in SQLite,
+  with a local ignored database backup. 85 backend tests passed.
+
+## Spoken naming and deletion update
+
+- Combined name/note clauses now save both, with pending name/body across turns.
+  Unknown titles ask for a name rather than invent a numbered placeholder.
+- Local speech model upgraded to small.en with beam size 5; actual live accuracy
+  still depends on microphone, pronunciation, and room noise.
+- Voice delete matches a saved note, object name, quoted text, or numbered choice.
+  Hidden notes disappear from thread and preview; durable undo restores them and
+  any replies. Only notes belonging to the selected local profile are targeted.
+
+## Latest pass: Brio 100 + local AI conversation
+
+- Working checkout: `feat/markerless-instance-recognition`, based on `60fb75c`.
+- Added Talk to Spots: local Ollama `qwen3.5:2b` vision chat, fresh per-turn
+  camera snapshots, selected thread context, bounded follow-up history, typed
+  and recorded input, spoken responses, and optional silence-ended hands-free
+  turns. The mic closes during playback. Stop/unmount cancels pending UI work.
+- Added direct spoken note saving with automatic enrollment, SQLite persistence
+  without expiry, idempotent retries, fresh-frame identity selection, and live
+  memory recall. Content extraction uses the user’s words, not generated text.
+  Added spoken object renaming and an off-camera saved-object library.
+  Removed the separate notes tab and AI draft handoff button. Unknown visual
+  questions bypass model guessing and request a user description, saved on the
+  following turn. Open thread/library still expose saved notes and replies. Added “post note” and draft
+  read-back; fixed voice reply commands accidentally opening an empty draft
+  before parsing the command.
+- Added a shared microphone owner and late-permission cleanup; requested echo
+  cancellation/noise suppression; corrected MP4 upload filename extensions.
+- Fixed macOS initial camera permission: OpenCV AVFoundation opens on the main
+  thread before capture workers start. Health status now refreshes in the UI.
+- Brio 100 camera and mic detected. AVFoundation camera index 1. MacBook Pro
+  speakers are the OS default output. `.env` configured for camera 1, local
+  Faster Whisper `base.en` CPU int8 and local Ollama (no API key required).
+- Live check: ~30 capture FPS, ~14 streamed FPS, ~8 recognition FPS. Actual
+  browser microphone speech reached transcription and the local model returned
+  camera descriptions. User confirmed both speech capture and speaker playback.
+- Verified vision on the saved poster image. A first small-model answer wrongly
+  denied having an image; subsequent live answers described the camera scene.
+  Strengthened explicit image-present context. Model factual accuracy is not
+  guaranteed. Use the matcher, not generated descriptions, for object identity.
+- Live memory test: user saved a note on a friend’s poster by voice, then
+  confirmed it reappeared after looking away and back. Voice naming gap fixed
+  with a deterministic rename handler; model prose cannot perform database edits.
+- Automated: backend and frontend regression suites and production build
+  passed. Added media lifecycle, voice route, draft handoff, silence detection,
+  image freshness, provider payload, error and no-write regression coverage.
+- Test tooling updated to Vitest 4.1.12 plus DOM testing; npm audit reported zero
+  vulnerabilities. Frontend tooling now requires Node 24+.
+- Launcher: `./scripts/start_local.sh`; serves `http://127.0.0.1:8000`.
+- Still future scope: native Meta display integration, shared 3D anchoring,
+  interest recommendations, Instagram accounts/DMs, and automatic spoken
+  barge-in while the assistant is speaking. The hands-free loop is turn-based.
+
+Earlier entries below describe prior snapshots and may have stale test counts
+or hardware-verification status.
+
+
 ## Changes
 
 - Built the FastAPI/SQLite backend with idempotent seeding and explicit reset.

@@ -12,6 +12,7 @@ from backend.app.main import create_app
 def make_test_settings(database_path: Path) -> Settings:
     return Settings(
         database_path=database_path,
+        llm_parser_enabled=False,
         camera_source="disabled",
         camera_index=0,
         camera_fixture=database_path.parent / "missing.png",

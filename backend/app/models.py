@@ -126,6 +126,66 @@ class HealthResponse(BaseModel):
     camera_status: str
     camera_source: str
     transcription_status: str
+    camera_index: int = 0
+    llm_parser_enabled: bool = False
+    assistant_status: str = "unavailable"
+    assistant_model: str = ""
+    assistant_message: str | None = None
+
+
+class AssistantMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class AssistantRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    history: list[AssistantMessage] = Field(default_factory=list, max_length=12)
+    object_id: str | None = Field(default=None, max_length=200)
+    include_camera: bool = True
+    author_id: str = Field(default="guest", max_length=100)
+    request_id: str | None = Field(default=None, min_length=8, max_length=80)
+    awaiting_description: bool = False
+    pending_edit_ids: list[int] = Field(default_factory=list, max_length=100)
+    pending_edit_body: str = Field(default="", max_length=500)
+    read_aloud: bool = False
+    awaiting_note: bool = False
+    awaiting_name: bool = False
+    pending_delete_ids: list[int] = Field(default_factory=list, max_length=100)
+    last_note_id: int | None = None
+    deletion_id: str | None = Field(default=None, max_length=100)
+    pending_title: str = Field(default="", max_length=80)
+    pending_body: str = Field(default="", max_length=500)
+
+    @field_validator("message")
+    @classmethod
+    def clean_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Say or type a question first")
+        return value.strip()
+
+
+class AssistantResponse(BaseModel):
+    text: str
+    model: str
+    camera_used: bool
+    camera_source: str
+    captured_at: datetime | None = None
+    awaiting_description: bool = False
+    pending_edit_ids: list[int] = Field(default_factory=list, max_length=100)
+    pending_edit_body: str = Field(default="", max_length=500)
+    read_aloud: bool = False
+    awaiting_note: bool = False
+    awaiting_name: bool = False
+    pending_delete_ids: list[int] = Field(default_factory=list, max_length=100)
+    last_note_id: int | None = None
+    deletion_id: str | None = Field(default=None, max_length=100)
+    pending_title: str = Field(default="", max_length=80)
+    pending_body: str = Field(default="", max_length=500)
+    deleted_note_ids: list[int] = Field(default_factory=list)
+    memory_changed: bool = False
+    saved_note: Post | None = None
+    saved_object: ObjectSummary | None = None
 
 
 class PerformanceDiagnostics(BaseModel):

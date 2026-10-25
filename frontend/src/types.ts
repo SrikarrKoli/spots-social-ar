@@ -81,9 +81,17 @@ export interface HealthResponse {
   camera_status: string;
   camera_source: string;
   transcription_status: string;
+  camera_index: number;
+  llm_parser_enabled?: boolean;
+  assistant_status: string;
+  assistant_model: string;
+  assistant_message: string | null;
 }
 
 export interface LockedTarget {
   object: ObjectSummary;
   parentPost: Post | null;
 }
+
+export interface AssistantMessage { role: "user" | "assistant"; content: string; }
+export interface AssistantResponse { text: string; model: string; camera_used: boolean; camera_source: string; captured_at: string | null; awaiting_description: boolean; pending_edit_ids: number[]; pending_edit_body: string; read_aloud: boolean; awaiting_note: boolean; awaiting_name: boolean; pending_title: string; pending_body: string; pending_delete_ids: number[]; deletion_id: string | null; deleted_note_ids: number[]; memory_changed: boolean; saved_note: Post | null; saved_object: ObjectSummary | null; }

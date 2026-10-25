@@ -25,6 +25,8 @@ export interface VoiceContext {
 }
 
 export type VoiceIntent =
+  | { type: "start_note" }
+  | { type: "read_draft" }
   | { type: "post_draft" }
   | { type: "cancel_draft" }
   | { type: "retry_dictation" }
@@ -150,6 +152,7 @@ export function parseVoiceInput(
   }
 
   if (mode === "review") {
+    if (["read my draft", "read draft", "read my note", "read it back"].includes(text)) return { type: "read_draft" };
     if (POST_PHRASES.has(text)) return { type: "post_draft" };
     if (CANCEL_PHRASES.has(text)) return { type: "cancel_draft" };
     if (RETRY_PHRASES.has(text)) return { type: "retry_dictation" };
@@ -167,6 +170,7 @@ export function parseVoiceInput(
     return { type: "not_understood", heard };
   }
 
+  if (["post note", "post a note", "leave a note", "new note"].includes(text)) return { type: "start_note" };
   if (READ_PHRASES.has(text)) return { type: "read_thread" };
 
   const enrolTitle = extractEnrolTitle(heard);
@@ -206,4 +210,4 @@ export function parseVoiceInput(
 }
 
 export const VOICE_COMMAND_EXAMPLES =
-  "Try: “open the book”, “reply to Maya”, “enrol this as my mug”, “read the thread”, or hold the button and dictate a post in an open thread.";
+  "Try: “open the book”, “reply to Vishal”, “enrol this as my mug”, “read the thread”, or hold the button and dictate a post in an open thread.";

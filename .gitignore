@@ -13,3 +13,5 @@ frontend/coverage/
 frontend/*.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+# Personal camera enrollment images are runtime memory, not source assets.
+data/enrolled/

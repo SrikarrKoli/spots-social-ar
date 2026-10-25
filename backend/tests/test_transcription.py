@@ -84,7 +84,7 @@ async def test_faster_whisper_transcribes_off_event_loop() -> None:
     assert model.audio == b"browser-audio"
     assert model.thread_id != event_loop_thread
     assert model.options == {
-        "beam_size": 1,
+        "beam_size": 5,
         "vad_filter": True,
         "without_timestamps": True,
         "initial_prompt": "Names may include Maya.",

@@ -1,0 +1,14 @@
+[
+  {"message":"Okay, do you see this fridge? It is in my frame.","context":{"awaiting_note":true},"action":"chat"},
+  {"message":"Could you jot down on this thing that I bought it yesterday","action":"add_comment","comment":"I bought it yesterday"},
+  {"message":"Call it blue water bottle and say it looks really nice","action":"add_comment","name":"Blue water bottle","comment":"it looks really nice"},
+  {"message":"No, change what I just said to I bought it last week","context":{"last_note_id":1},"action":"edit_comment","comment":"I bought it last week","selector":"last"},
+  {"message":"What did people leave about this before?","action":"read_comments"},
+  {"message":"It keeps milk cold.","context":{"awaiting_note":true,"pending_title":"Fridge"},"action":"add_comment","comment":"It keeps milk cold."},
+  {"message":"the second one","context":{"pending_edit_ids":[1,2],"pending_edit_body":"Bought last week."},"action":"edit_comment","selector":"number","number":2},
+  {"message":"Delete that note","context":{"last_note_id":1},"action":"delete_comment","selector":"last"},
+  {"message":"undo","action":"undo"},
+  {"message":"Can you make a note about this jersey right here","action":"add_comment","comment":""},
+  {"message":"It's a fridge.","context":{"awaiting_description":true},"action":"describe_object","name":"Fridge"},
+  {"message":"It's a blue water bottle by LinkedIn and say it looks really nice.","context":{"awaiting_description":true},"action":"add_comment","name":"Blue water bottle","comment":"it looks really nice."}
+]

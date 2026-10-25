@@ -10,6 +10,8 @@ import { Composer, type ExternalTranscript, type VoiceDraftAction } from "./Comp
 import { VoiceControl } from "./VoiceControl";
 
 interface Props {
+  assistantDraft?: { text: string; nonce: number } | null;
+  onAssistantDraftHandled?: () => void;
   object: ObjectSummary | null;
   availableObjects: ObjectSummary[];
   onSelectObject: (object: ObjectSummary) => void;
@@ -257,7 +259,7 @@ function EnrollObject({
   );
 }
 
-export const ThreadPanel = memo(function ThreadPanel({ object, availableObjects, onSelectObject, onObjectEnrolled, onEnrollmentActiveChange, showImproveHint = false, provisionalDetections = [], onConfirmProvisional, profile, transcriptionConfigured }: Props) {
+export const ThreadPanel = memo(function ThreadPanel({ assistantDraft = null, onAssistantDraftHandled, object, availableObjects, onSelectObject, onObjectEnrolled, onEnrollmentActiveChange, showImproveHint = false, provisionalDetections = [], onConfirmProvisional, profile, transcriptionConfigured }: Props) {
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [draftReviewing, setDraftReviewing] = useState(false);
   const [pendingTranscript, setPendingTranscript] = useState<ExternalTranscript | null>(null);
@@ -291,6 +293,8 @@ export const ThreadPanel = memo(function ThreadPanel({ object, availableObjects,
   const [error, setError] = useState<string | null>(null);
   const [composerTarget, setComposerTarget] = useState<LockedTarget | null>(null);
 
+  const recordingTargetRef = useRef<LockedTarget | null>(null);
+
   // -- voice ---------------------------------------------------------------
   const voiceMode = voiceModeForState(Boolean(object), Boolean(composerTarget), draftReviewing);
   const confirmableProvisional =
@@ -307,14 +311,23 @@ export const ThreadPanel = memo(function ThreadPanel({ object, availableObjects,
   };
 
   function handleDictation(text: string): string {
-    if (!object) return "Open a thread first, or say “open the book”.";
-    if (!composerTarget) setComposerTarget(lockTarget(object));
+    const target = composerTarget ?? recordingTargetRef.current ?? (object ? lockTarget(object) : null);
+    recordingTargetRef.current = null;
+    if (!target) return "Open a thread first, or say “open the book”.";
+    setComposerTarget(target);
     setPendingTranscript({ text, nonce: nextNonce() });
-    return `Draft for “${object.title}” — review it, then say “post it” or press Post.`;
+    return `Draft for “${target.object.title}” — review it, then say “post it” or press Post.`;
   }
 
   function handleVoiceIntent(intent: VoiceIntent): string {
     switch (intent.type) {
+      case "start_note":
+        if (!object) return "Look at an enrolled object or open a thread first.";
+        if (!composerTarget) setComposerTarget(lockTarget(object));
+        return "Ready for your note. Push to talk, dictate, then review before posting.";
+      case "read_draft":
+        setVoiceAction({ type: "read", nonce: nextNonce() });
+        return "Reading your draft. Say post it only when you are ready to publish.";
       case "post_draft":
         setVoiceAction({ type: "post", nonce: nextNonce() });
         return "Posting your reviewed draft…";
@@ -367,10 +380,11 @@ export const ThreadPanel = memo(function ThreadPanel({ object, availableObjects,
       threadObject={object}
       threadPosts={thread?.posts ?? []}
       onDictationStart={() => {
-        if (!object || composerTarget) return;
-        setPendingTranscript(null);
-        setVoiceAction(null);
-        setComposerTarget(lockTarget(object));
+        recordingTargetRef.current = composerTarget ?? (object ? lockTarget(object) : null);
+        if (!composerTarget) {
+          setPendingTranscript(null);
+          setVoiceAction(null);
+        }
       }}
       onDictation={handleDictation}
       onIntent={handleVoiceIntent}
@@ -405,6 +419,16 @@ export const ThreadPanel = memo(function ThreadPanel({ object, availableObjects,
     }
   }, [object]);
 
+  const consumedDraft = useRef(0);
+  useEffect(() => {
+    if (!assistantDraft || !object || consumedDraft.current === assistantDraft.nonce) return;
+    consumedDraft.current = assistantDraft.nonce;
+    setComposerTarget(lockTarget(object));
+    setPendingTranscript({ text: assistantDraft.text, nonce: nextNonce() });
+    setVoiceAction(null);
+    onAssistantDraftHandled?.();
+  }, [assistantDraft, object, onAssistantDraftHandled]);
+
   usePolling(async (signal) => loadThread(signal), 1500, Boolean(object));
 
   if (!object) {
@@ -413,6 +437,7 @@ export const ThreadPanel = memo(function ThreadPanel({ object, availableObjects,
         <div className="empty-thread-mark">⌖</div>
         <p className="eyebrow">OBJECT THREAD</p>
         <h2>No conversation open</h2>
+        {assistantDraft && <p className="inline-note">Your AI draft is waiting. Select an enrolled object below, or scan and save a new object, then review the note before posting.</p>}
         <p>Look at an enrolled object, then open its nearby conversation.</p>
         <div className="thread-picker">
           <span>OR BROWSE A DEMO THREAD</span>

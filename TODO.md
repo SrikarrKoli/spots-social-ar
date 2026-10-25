@@ -1,3 +1,16 @@
+# Latest local-demo status
+
+The Brio 100 / MacBook demo is running with local transcription, local visual
+AI conversation, spoken answers, hands-free turn-taking, direct voice note
+saving, object renaming, persistent memory recall and optional reviewed drafts. The user confirmed speech capture and MacBook speaker audio. See the
+latest HANDOFF.md entry and README's Brio setup section for verified behavior.
+
+Remaining acceptance: rehearse actual enrolled objects at venue distance and
+lighting; check a saved social reply in a second browser; test reconnecting the
+Brio if its device index changes. Native glasses display, 3D anchors and social
+recommendations remain future work. The older checklist below is historical
+and does not supersede the verified latest status.
+
 # MVP Remaining Work
 
 The software MVP is implemented and automated checks pass. The remaining work

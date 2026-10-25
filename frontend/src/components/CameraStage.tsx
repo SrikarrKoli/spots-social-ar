@@ -10,6 +10,7 @@ interface Props {
   onOpenObject: (detection: Detection) => void;
   onConfirmIdentity?: (detection: Detection) => void;
   enrollmentActive?: boolean;
+  memoryMode?: boolean;
 }
 
 export function CameraStage({
@@ -20,6 +21,7 @@ export function CameraStage({
   onOpenObject,
   onConfirmIdentity,
   enrollmentActive = false,
+  memoryMode = false,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
@@ -84,6 +86,7 @@ export function CameraStage({
           </div>
         )}
 
+        {!cameraMissing && memoryMode && !enrollmentActive && <div className="memory-guide" aria-hidden="true"><span>CENTER ONE OBJECT TO SAVE A NOTE</span></div>}
         {!cameraMissing && enrollmentActive && (
           <div className="enrollment-guide" aria-hidden="true">
             <span>PUT THE OBJECT IN THIS BOX · SLOWLY TURN IT</span>

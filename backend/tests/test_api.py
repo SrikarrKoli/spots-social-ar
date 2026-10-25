@@ -22,6 +22,7 @@ def test_seeded_demo_and_identity_resolution(client: TestClient):
     assert profiles.status_code == 200
     assert {profile["id"] for profile in profiles.json()} == {
         "maya",
+        "pravan",
         "theo",
         "lina",
         "guest",

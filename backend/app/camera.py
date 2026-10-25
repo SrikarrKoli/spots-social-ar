@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import sys
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -184,6 +185,10 @@ class CameraService:
             return
         if any(thread.is_alive() for thread in self._threads):
             return
+        # macOS permission requests must run on the main thread's run loop.
+        # Opening here also avoids OpenCV trying unrelated capture backends.
+        if self.source == "camera" and sys.platform == "darwin":
+            self._capture = cv2.VideoCapture(self.camera_index, cv2.CAP_AVFOUNDATION)
         self._stop.clear()
         self._threads = [
             threading.Thread(
@@ -222,6 +227,32 @@ class CameraService:
     def status(self) -> str:
         with self._lock:
             return self._status
+
+    def assistant_frame(self) -> tuple[bytes, datetime] | None:
+        """Copy only a fresh capture; never reuse a stale image after disconnect."""
+        with self._lock:
+            if (self._status != "ready" or self._latest_frame is None
+                    or time.monotonic() - self._capture_monotonic > 2):
+                return None
+            frame = self._latest_frame.copy()
+            captured_at = self._captured_at
+        height, width = frame.shape[:2]
+        if width > 960:
+            frame = cv2.resize(frame, (960, round(height * 960 / width)))
+        ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return (jpeg.tobytes(), captured_at) if ok else None
+
+    def memory_capture(self) -> tuple[np.ndarray, datetime, list] | None:
+        """Recognize the exact saved frame, never a lingering overlay track."""
+        with self._lock:
+            if (self._status != "ready" or self._latest_frame is None
+                    or time.monotonic() - self._capture_monotonic > 2):
+                return None
+            frame = self._latest_frame.copy()
+            captured_at = self._captured_at
+        with self._recognizer_lock:
+            matches = self.recognizer.detect(frame)
+        return frame, captured_at, matches
 
     def load_reference_files(self, references: list[tuple[str, Path]]) -> None:
         loader = getattr(self.recognizer, "load_references", None)
@@ -477,7 +508,7 @@ class CameraService:
             self._stop.wait(1 / 30)
 
     def _run_camera_capture(self) -> None:
-        capture = cv2.VideoCapture(self.camera_index)
+        capture = self._capture if self._capture is not None else cv2.VideoCapture(self.camera_index)
         self._capture = capture
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.requested_width)
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.requested_height)

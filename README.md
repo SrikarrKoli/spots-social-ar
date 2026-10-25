@@ -1,6 +1,6 @@
-# Locus — AR Conversations on Physical Objects
+# Spots — Conversations on Physical Objects
 
-Locus is a hackathon MVP for attaching social conversations to real-world
+Spots (originally Locus) is a hackathon MVP for attaching social conversations to real-world
 objects. A glasses-mounted webcam sends video to a laptop, the backend
 **recognises enrolled objects by their own appearance** (no printed markers),
 and the browser places a compact conversation preview beside the recognised
@@ -17,7 +17,7 @@ architecture, setup, verification, and three-minute demo flow.
 
 ## Quick start
 
-Prerequisites: Python 3.11, Node 18+, `uv`, a webcam for hardware mode, and a
+Prerequisites: Python 3.11, Node 24+, `uv`, a webcam for hardware mode, and a
 modern Chromium/Firefox browser for microphone recording.
 
 ```bash
@@ -91,7 +91,7 @@ configured. The UI must never substitute canned text for a real transcript.
 - Distinguishing two visually identical, unmarked copies of the same item
   (camera-only systems cannot; Locus reports `unknown` instead of guessing).
 - 3D mapping, spatial persistence, native mobile clients, or glasses displays.
-- Real-time streaming transcription and unconstrained AI-generated messages.
+- Real-time streaming transcription and automatic spoken interruption during playback.
 - More than one reply nesting level.
 
 ## Architecture
@@ -477,3 +477,115 @@ does not claim to be the AR product.
 - [ ] Physical webcam, glasses microphone, live local transcription, and visual
   browser inspection still require the target demo hardware/environment.
 
+
+## Spots: Brio 100 and MacBook voice demo
+
+The desktop UI now uses the Spots name and opens in **Talk to Spots** mode.
+The separate notes tab has been removed. **Open thread** and the saved-object
+list still open persistent posts and replies. Unknown visual identification
+asks for a description, then saves the user’s next description as a note. In Talk to Spots, saying “take a note: …”
+saves directly to the object currently in view and enrolls a new object if needed.
+Notes are stored in SQLite without an expiry; camera recognition expiring never
+deletes a note. Keep the database and enrolled reference images to retain memories.
+
+Start with `./scripts/start_local.sh`, then visit http://127.0.0.1:8000.
+The launcher builds the UI and runs one backend (do not run multiple workers
+against the same webcam). It preserves the existing database and `.env`.
+For this Mac, AVFoundation enumerated the Brio 100 at index 1. Device indices
+can change when hardware changes. Check the preview after reconnecting.
+Camera permission is requested from the main thread on macOS.
+
+Local configuration used for the working demo:
+
+```dotenv
+APP_CAMERA_SOURCE=camera
+APP_CAMERA_INDEX=1
+APP_RECOGNIZER=instance
+APP_TRANSCRIPTION_PROVIDER=faster-whisper
+APP_WHISPER_MODEL=small.en
+APP_WHISPER_DEVICE=cpu
+APP_WHISPER_COMPUTE_TYPE=int8
+APP_ASSISTANT_MODEL=qwen3.5:4b
+APP_OLLAMA_URL=http://127.0.0.1:11434
+```
+
+Ollama must be running with the selected vision model installed (`ollama list`).
+The configured Ollama URL is a trusted backend setting. With the loopback URL
+above, speech transcription and image conversation run locally without an API
+key. The Whisper model downloads on its first use. `small.en` is an English model
+selected for faster CPU turns; use a multilingual Whisper model for other languages.
+
+1. Open Talk to Spots. Allow microphone permission, then select Brio 100 or the
+   MacBook microphone in the microphone picker. macOS Sound output should be
+   MacBook Pro Speakers. Use **Test speakers** to check playback.
+2. **Ask by voice** starts recording; **Finish question** submits the turn.
+   **Start hands-free** instead detects the end of speech after a pause, then
+   transcribes, answers, speaks, and listens again. **Stop** cancels the UI turn
+   and closes the mic. Say “stop listening” during a listening turn to end it.
+3. Each question includes one fresh camera snapshot when camera sharing is on,
+   plus the selected object thread and up to six previous exchanges. This is
+   snapshot-based visual conversation, not continuous video reasoning. Missing
+   or stale frames produce an explicit error. Uncheck camera sharing for text-only chat.
+4. The microphone stays closed while the assistant is speaking, then waits
+   briefly before listening again. Press Stop to interrupt playback; automatic
+   spoken barge-in during playback is not implemented. No speech for ten seconds
+   pauses hands-free mode. A turn is capped at 25 seconds.
+5. Center one object and say “take a note: this poster is of my friend.” The app
+   saves the actual dictated content, confirms only after the database commit,
+   and shows it when that object is recognized again. “Take a note” alone asks
+   what to remember. Use **Saved objects & memories** even when it is off-camera.
+   Say “Rename this to Dinnie poster” to change the visible saved object’s name.
+   **Open thread** opens all of that object’s notes and replies.
+
+
+Spoken requests are interpreted by a local LLM using a strict JSON schema before
+any action runs. `APP_LLM_PARSER_ENABLED=true` is the default. The parser sees the
+current transcript, recent conversation, pending questions, and saved object names;
+it receives no camera image. It separates action, noun-phrase name, target object,
+comment spans, and comment selection. Write arguments must match the source speech
+or a held draft. Ambiguous/invalid output and provider failure ask for clarification
+without a write. There is no automatic fallback to regex actions in LLM mode.
+The existing transaction, fresh-camera identity, author, retry, and undo checks
+still execute every action. Transcription remains Faster Whisper; the LLM interprets
+its transcript and cannot guarantee recovery of words that were misheard.
+
+Run the optional real-model phrase checks without changing notes:
+`uv run python -m scripts.evaluate_intent_parser --model qwen3.5:4b`.
+Set `APP_LLM_PARSER_ENABLED=false` only to explicitly use the older rule-based path.
+
+Object clarification and comment dictation are separate states. “Do you see this
+fridge? It’s in my frame” is conversation even when a comment prompt is pending.
+Naming alone creates/renames the object without adding a comment. Save content
+with “add a comment saying I bought it yesterday”; only the dictated content is
+stored. Camera/setup chatter and command framing are excluded.
+
+Ask “what other notes were left on this object?” to fetch actual stored notes
+and replies. “Read past comments aloud” reads them with browser speech, even
+when automatic spoken answers are off. “Change my last comment to say …” edits
+the same post, keeping its replies. If several comments could match, the app
+asks for a number and retains the replacement until the selection is made.
+Edits apply to the current local profile’s comments and are recorded in SQLite.
+
+Object titles use a locally installed English noun-phrase parser: “blue water
+bottle” remains the title, while “by LinkedIn and say it looks really nice”
+becomes comment text. Command wording such as “can you make a note about this
+jersey right here” yields the title “Jersey”. The pinned spaCy pipeline and model
+are installed by `uv sync`; no speech text is sent to a remote parsing service.
+
+Spoken memory commands support names and notes together, such as “Call it blue
+water bottle and add a note saying it looks really nice.” Names survive the
+follow-up when the app asks for note content. A new object with no usable name
+asks for one and holds the note in the current conversation instead of creating
+a numbered placeholder. “Delete that note”, “delete the note saying …”, and
+“delete all notes for [object name]” remove the current profile’s notes from
+recall and threads. Ambiguous deletions list choices. Say “undo” to restore the
+last deletion (including replies). Deletion is stored locally and survives restart.
+
+`GET /api/health` reports camera, transcription and local AI readiness.
+`POST /api/assistant` accepts message, bounded user/assistant history,
+optional object_id, and include_camera. It returns text and camera provenance.
+The local model can misread images and should not be treated as a guaranteed
+object recognizer. Registered object identity still comes from the existing
+feature matcher. Low-texture objects and visually identical copies remain
+recognition limitations. Native Meta display integration, shared 3D anchors,
+Instagram integration and interest recommendations remain future work.

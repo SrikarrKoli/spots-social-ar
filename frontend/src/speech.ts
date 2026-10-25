@@ -7,7 +7,11 @@ export function speechSupported(): boolean {
   return typeof window !== "undefined" && "speechSynthesis" in window;
 }
 
+let finishPending: (() => void) | null = null;
+
 export function stopSpeaking(): void {
+  finishPending?.();
+  finishPending = null;
   if (speechSupported()) window.speechSynthesis.cancel();
 }
 
@@ -35,4 +39,26 @@ export function speakThread(
     window.speechSynthesis.speak(utterance);
   });
   return true;
+}
+
+export function speakText(text: string): Promise<void> {
+  stopSpeaking();
+  if (!speechSupported()) return Promise.reject(new Error("Speech playback is unavailable in this browser."));
+  return new Promise((resolve, reject) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    const timer = window.setTimeout(() => {
+      finishPending = null;
+      window.speechSynthesis.cancel();
+      reject(new Error("Speech playback timed out. Use Stop and try again."));
+    }, 90000);
+    const finish = () => { window.clearTimeout(timer); finishPending = null; resolve(); };
+    finishPending = finish;
+    utterance.onend = finish;
+    utterance.onerror = (event) => {
+      window.clearTimeout(timer); finishPending = null;
+      if (event.error === "canceled" || event.error === "interrupted") resolve();
+      else reject(new Error("Could not play speech. Check browser audio and your Mac output."));
+    };
+    window.speechSynthesis.speak(utterance);
+  });
 }

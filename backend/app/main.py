@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,10 +16,19 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .camera import CameraService
+from .assistant import AssistantError, LocalAssistant
+from .intent_parser import IntentParser
+from .intent_dispatch import dispatch_intent
+from .memories import MemoryService, is_note_request
+from .comment_actions import is_read_request, read_comments, is_edit_request, edit_comment
+from .note_deletion import is_delete_request, is_undo_request, delete_or_restore
+from .note_commands import is_rename_request, is_visual_identification, explicit_name_comment, is_conversation_turn, clean_object_name, is_cancel_request
 from .config import ROOT, Settings
 from .database import Database, seed_demo
 from .models import (
     AddViewsResponse,
+    AssistantRequest,
+    AssistantResponse,
     ConfirmIdentityRequest,
     CreatePostRequest,
     EnrollLiveRequest,
@@ -61,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     cv2.setNumThreads(app_settings.opencv_threads)
     database = Database(app_settings.database_path)
     repository = Repository(database)
+    assistant = LocalAssistant(app_settings.ollama_url, app_settings.assistant_model)
     camera = CameraService(
         source=app_settings.camera_source,
         camera_index=app_settings.camera_index,
@@ -90,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         whisper_device=app_settings.whisper_device,
         whisper_compute_type=app_settings.whisper_compute_type,
     )
+    memories = MemoryService(repository, camera, assistant, app_settings.enrolled_dir)
     camera.load_shed_active = lambda: bool(
         getattr(transcription, "busy", False)
     )
@@ -169,14 +181,103 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.repository = repository
     app.state.camera = camera
     app.state.transcription = transcription
+    app.state.assistant = assistant
+    app.state.memories = memories
 
     @app.get("/api/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
+        assistant_status, assistant_message = await assistant.readiness()
         return HealthResponse(
             camera_status=camera.status,
             camera_source=camera.source,
             transcription_status=transcription.status,
+            camera_index=camera.camera_index,
+            llm_parser_enabled=app_settings.llm_parser_enabled,
+            assistant_status=assistant_status,
+            assistant_model=assistant.model,
+            assistant_message=assistant_message,
         )
+
+    parser = IntentParser(app_settings.ollama_url, app_settings.assistant_model)
+    app.state.intent_parser = parser
+
+    @app.post("/api/assistant", response_model=AssistantResponse)
+    async def converse(payload: AssistantRequest) -> AssistantResponse:
+        history = [item.model_dump() for item in payload.history]
+        if app_settings.llm_parser_enabled:
+            try:
+                intent = await parser.parse(payload, repository.objects())
+                handled = await dispatch_intent(memories, payload, intent)
+            except AssistantError as error:
+                return AssistantResponse(text=str(error), model=assistant.model,
+                    camera_used=False, camera_source=camera.source)
+            if handled is not None:
+                return handled
+        else:
+            if (payload.awaiting_note or payload.awaiting_name or payload.pending_delete_ids or payload.awaiting_description or payload.pending_edit_ids) and is_cancel_request(payload.message):
+                return AssistantResponse(text="Cancelled. Nothing was changed.", model=assistant.model,
+                                         camera_used=False, camera_source=camera.source)
+            if is_edit_request(payload.message):
+                return await edit_comment(memories, payload)
+            if is_read_request(payload.message):
+                return await read_comments(memories, payload)
+            if payload.pending_edit_ids and not is_conversation_turn(payload.message):
+                return await edit_comment(memories, payload)
+            if payload.awaiting_description and not is_note_request(payload.message, history) and not is_conversation_turn(payload.message):
+                title = clean_object_name(payload.message)
+                return AssistantResponse(text=f"Got it{': ' + title if title else ''}. What comment should I save? You can say 'add a comment saying …'.", model=assistant.model,
+                    camera_used=False, camera_source=camera.source, awaiting_note=True, pending_title=title)
+            if is_undo_request(payload.message):
+                return await delete_or_restore(memories, payload, undo=True)
+            if payload.pending_delete_ids or is_delete_request(payload.message):
+                return await delete_or_restore(memories, payload)
+            if is_rename_request(payload.message) and not (payload.awaiting_note or payload.awaiting_name or is_note_request(payload.message, history) or explicit_name_comment(payload.message)):
+                return await memories.rename(payload)
+            if (payload.awaiting_note and not is_conversation_turn(payload.message)) or (payload.awaiting_name and not is_conversation_turn(payload.message)) or is_note_request(payload.message, history) or explicit_name_comment(payload.message):
+                return await memories.save(payload)
+        context: dict = {"camera_source": camera.source}
+        if payload.object_id:
+            try:
+                thread = await asyncio.to_thread(repository.thread, payload.object_id)
+            except NotFoundError as error:
+                raise HTTPException(status_code=404, detail=str(error)) from error
+            context["selected_thread"] = {
+                "object": thread.object.model_dump(),
+                "posts": [post.model_dump(mode="json") for post in thread.posts[-8:]],
+            }
+        frame = await asyncio.to_thread(camera.assistant_frame) if payload.include_camera else None
+        if payload.include_camera and frame is None:
+            raise HTTPException(status_code=503, detail="No fresh camera frame. Reconnect the camera or turn off camera sharing to chat.")
+        if frame and is_visual_identification(payload.message):
+            capture = await asyncio.to_thread(camera.memory_capture)
+            matches = capture[2] if capture else []
+            corrected = bool(re.search(r"\b(?:wrong|guessing|that is not|that's not)\b", payload.message, re.I))
+            if corrected or len(matches) != 1 or matches[0].tier != "high":
+                return AssistantResponse(
+                    text="I'm not sure which object this is. Center one object and tell me what it is. Then I'll ask what comment you want to save. You can say cancel to skip.",
+                    model=assistant.model, camera_used=True, camera_source=camera.source,
+                    captured_at=frame[1], awaiting_description=True)
+        context["camera_attached"] = frame is not None
+        context["recognized_objects"] = [
+            {"identity": item["identity_key"], "tier": item["tier"]}
+            for item in camera.snapshot()["detections"]
+        ] if frame else []
+        try:
+            answer = await assistant.answer(
+                payload.message, [item.model_dump() for item in payload.history],
+                json.dumps(context)[:16000],
+                base64.b64encode(frame[0]).decode() if frame else None,
+            )
+        except AssistantError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        if frame and re.search(r"\b(?:looks? like|seems? (?:like|to be)|might be|could be|not sure|can't (?:tell|identify)|cannot (?:tell|identify))\b", answer, re.I):
+            return AssistantResponse(
+                text="I'm not confident about that object. Keep it centered and tell me what it is. Then I'll ask for the comment you want to save. Say cancel to skip.",
+                model=assistant.model, camera_used=True, camera_source=camera.source,
+                captured_at=frame[1], awaiting_description=True)
+        return AssistantResponse(text=answer, model=assistant.model,
+                                 camera_used=frame is not None, camera_source=camera.source,
+                                 captured_at=frame[1] if frame else None)
 
     @app.get(
         "/api/diagnostics/performance", response_model=PerformanceDiagnostics

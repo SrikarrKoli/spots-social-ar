@@ -46,6 +46,29 @@ CREATE TABLE IF NOT EXISTS posts (
     seed_key TEXT UNIQUE
 );
 
+CREATE TABLE IF NOT EXISTS note_edits (
+    request_id TEXT PRIMARY KEY,
+    post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    author_id TEXT NOT NULL,
+    previous_body TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS note_deletions (
+    request_id TEXT PRIMARY KEY,
+    author_id TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    post_ids TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    restored INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS deleted_notes (
+    post_id INTEGER PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+    request_id TEXT NOT NULL REFERENCES note_deletions(request_id) ON DELETE CASCADE
+);
+CREATE VIEW IF NOT EXISTS active_posts AS
+    SELECT * FROM posts WHERE id NOT IN (SELECT post_id FROM deleted_notes);
+
 CREATE INDEX IF NOT EXISTS posts_object_created
     ON posts(object_id, created_at, id);
 CREATE INDEX IF NOT EXISTS posts_parent
@@ -148,6 +171,8 @@ class Database:
 
     def reset(self) -> None:
         with self.connect() as connection:
+            connection.execute("DELETE FROM deleted_notes")
+            connection.execute("DELETE FROM note_deletions")
             connection.execute("DELETE FROM posts")
             connection.execute("DELETE FROM object_fingerprints")
             connection.execute("DELETE FROM objects")
@@ -156,7 +181,8 @@ class Database:
 
 
 USERS = (
-    ("maya", "Maya Chen", "MC", "#F26B4C"),
+    ("maya", "Vishal", "V", "#F26B4C"),
+    ("pravan", "Pravan", "PR", "#477D65"),
     ("theo", "Theo Brooks", "TB", "#4F7CAC"),
     ("lina", "Lina Ortiz", "LO", "#8B6F9E"),
     ("guest", "Guest", "G", "#68706F"),

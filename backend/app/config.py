@@ -39,6 +39,9 @@ class Settings:
     whisper_model: str
     whisper_device: str
     whisper_compute_type: str
+    llm_parser_enabled: bool = True
+    assistant_model: str = "qwen3.5:4b"
+    ollama_url: str = "http://127.0.0.1:11434"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -83,11 +86,14 @@ class Settings:
             ),
             openai_transcription_prompt=os.getenv(
                 "OPENAI_TRANSCRIPTION_PROMPT",
-                "Names in this social app may include Maya, Theo, and Lina.",
+                "Names in this social app may include Vishal, Pravan, Theo, and Lina.",
             ),
             whisper_model=os.getenv("APP_WHISPER_MODEL", "medium"),
             whisper_device=os.getenv("APP_WHISPER_DEVICE", "cpu"),
             whisper_compute_type=os.getenv(
                 "APP_WHISPER_COMPUTE_TYPE", "int8"
             ),
+            llm_parser_enabled=os.getenv("APP_LLM_PARSER_ENABLED", "true").lower() == "true",
+            assistant_model=os.getenv("APP_ASSISTANT_MODEL", "qwen3.5:4b"),
+            ollama_url=os.getenv("APP_OLLAMA_URL", "http://127.0.0.1:11434"),
         )

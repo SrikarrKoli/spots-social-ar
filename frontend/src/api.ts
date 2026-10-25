@@ -1,5 +1,7 @@
 import type {
   AddViewsResult,
+  AssistantMessage,
+  AssistantResponse,
   HealthResponse,
   LiveEnrollment,
   LiveScan,
@@ -34,6 +36,11 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 export const api = {
+  askAssistant(message: string, history: AssistantMessage[], objectId: string | null, includeCamera: boolean, signal?: AbortSignal, note?: { authorId: string; requestId: string; awaitingNote: boolean; awaitingName?: boolean; pendingTitle?: string; pendingBody?: string; pendingDeleteIds?: number[]; lastNoteId?: number; deletionId?: string; awaitingDescription?: boolean; pendingEditIds?: number[]; pendingEditBody?: string }) {
+    return fetch("/api/assistant", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, history: history.slice(-12).map((item) => ({ ...item, content: item.content.slice(0, 4000) })), object_id: objectId, include_camera: includeCamera, author_id: note?.authorId ?? "guest", request_id: note?.requestId, awaiting_note: note?.awaitingNote ?? false, awaiting_name: note?.awaitingName ?? false, pending_title: note?.pendingTitle ?? "", pending_body: note?.pendingBody ?? "", pending_delete_ids: note?.pendingDeleteIds ?? [], last_note_id: note?.lastNoteId, deletion_id: note?.deletionId, awaiting_description: note?.awaitingDescription ?? false, pending_edit_ids: note?.pendingEditIds ?? [], pending_edit_body: note?.pendingEditBody ?? "" }), signal,
+    }).then((response) => parseResponse<AssistantResponse>(response));
+  },
   health(signal?: AbortSignal) {
     return fetch("/api/health", { signal }).then((response) =>
       parseResponse<HealthResponse>(response),
@@ -134,13 +141,14 @@ export const api = {
       body: JSON.stringify({ identity_key: identityKey }),
     }).then((response) => parseResponse<{ confirmed: boolean }>(response));
   },
-  transcribe(blob: Blob) {
+  transcribe(blob: Blob, signal?: AbortSignal) {
     const form = new FormData();
-    const extension = blob.type.includes("wav") ? "wav" : "webm";
+    const extension = blob.type.includes("mp4") ? "mp4" : blob.type.includes("wav") ? "wav" : "webm";
     form.append("audio", blob, `recording.${extension}`);
     return fetch("/api/transcriptions", {
       method: "POST",
       body: form,
+      signal,
     }).then((response) =>
       parseResponse<{ text: string; provider: string }>(response),
     );
