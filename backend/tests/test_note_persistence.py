@@ -90,3 +90,53 @@ def test_note_stays_with_its_object_across_restart_and_new_viewpoints(database_p
         # A different object in the same spot never inherits the mug's notes.
         stranger = view(object_image(*OTHER), centre=(430, 300), scale=0.8, angle=9, background=55, seed=7)
         assert object_id not in {match.identity_key for match in camera.recognizer.detect(stranger)}
+
+
+def test_second_profile_discovers_recognized_object_and_replies(client):
+    mug = object_image(*MUG)
+    encoded_ok, encoded = cv2.imencode('.png', mug)
+    assert encoded_ok
+
+    enrolled = client.post(
+        '/api/objects/enroll',
+        data={'title': 'Blue cafe mug'},
+        files={'image': ('mug.png', encoded.tobytes(), 'image/png')},
+    )
+    assert enrolled.status_code == 201, enrolled.text
+    object_id = enrolled.json()['id']
+
+    note = client.post(
+        f'/api/objects/{object_id}/posts',
+        json={
+            'author_id': 'maya',
+            'body': 'The cardamom latte is worth trying.',
+            'parent_post_id': None,
+            'client_request_id': 'maya-mug-note-0001',
+        },
+    )
+    assert note.status_code == 201, note.text
+
+    later = view(mug, centre=(460, 320), scale=0.85, angle=-7, background=50, seed=11)
+    matches = client.app.state.camera.recognizer.detect(later)
+    recognized = next(match for match in matches if match.identity_key == object_id)
+    assert recognized.tier == 'high'
+
+    resolved = client.get(f'/api/objects/by-identity/{recognized.identity_key}')
+    assert resolved.status_code == 200
+    thread = client.get(f'/api/objects/{resolved.json()["id"]}/posts').json()
+    assert thread['posts'][0]['author']['id'] == 'maya'
+    assert thread['posts'][0]['body'] == 'The cardamom latte is worth trying.'
+
+    reply = client.post(
+        f'/api/objects/{object_id}/posts',
+        json={
+            'author_id': 'guest',
+            'body': 'I will order that next time.',
+            'parent_post_id': note.json()['id'],
+            'client_request_id': 'guest-mug-reply-0001',
+        },
+    )
+    assert reply.status_code == 201, reply.text
+    updated = client.get(f'/api/objects/{object_id}/posts').json()
+    assert updated['posts'][0]['replies'][0]['author']['id'] == 'guest'
+    assert updated['posts'][0]['replies'][0]['body'] == 'I will order that next time.'
