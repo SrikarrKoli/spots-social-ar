@@ -5,9 +5,10 @@ class FakeAudio {
   static played: FakeAudio[] = [];
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  paused = false;
   constructor(readonly src: string) {}
   play() { FakeAudio.played.push(this); return Promise.resolve(); }
-  pause() {}
+  pause() { this.paused = true; }
   removeAttribute() {}
 }
 
@@ -43,6 +44,22 @@ describe("server voice playback", () => {
     respond(new Response(new Blob(["wav"]), { status: 200 }));
     await expect(done).resolves.toBeUndefined();
     expect(FakeAudio.played).toHaveLength(0);
+  });
+
+  it("stops active Kokoro audio without requesting the next chunk", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new Blob(["wav"]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const longReply = "This is one part of a longer spoken response. ".repeat(30);
+
+    const done = speakText(longReply);
+    await vi.waitFor(() => expect(FakeAudio.played).toHaveLength(1));
+    const firstChunk = FakeAudio.played[0];
+
+    stopSpeaking();
+
+    await expect(done).resolves.toBeUndefined();
+    expect(firstChunk.paused).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("reports a busy or unavailable voice instead of pretending it spoke", async () => {
