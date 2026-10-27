@@ -57,3 +57,29 @@ def test_identity_follows_the_object_not_its_position(recognizer: InstanceRecogn
 def test_unknown_scene_is_not_force_matched(recognizer: InstanceRecognizer):
     blank = np.full((480, 640, 3), 200, np.uint8)
     assert recognizer.detect(blank) == []
+
+
+def test_reference_edges_cannot_identify_an_object_after_it_is_removed():
+    gen = _generator()
+    object_view = cv2.resize(gen.concert_poster(), (480, 360))
+
+    def scene(seed: int, *, include_object: bool) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        frame = rng.integers(35, 220, size=(480, 640, 3), dtype=np.uint8)
+        if include_object:
+            frame[60:420, 80:560] = object_view
+        else:
+            frame[60:420, 80:560] = 128
+        return frame
+
+    recognizer = InstanceRecognizer()
+    assert recognizer.add_reference('poster', scene(4, include_object=True))
+
+    moved_to_new_background = scene(9, include_object=True)
+    assert any(
+        match.identity_key == 'poster' and match.tier == 'high'
+        for match in recognizer.detect(moved_to_new_background)
+    )
+
+    old_background_without_object = scene(4, include_object=False)
+    assert recognizer.detect(old_background_without_object) == []

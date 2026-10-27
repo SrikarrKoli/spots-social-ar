@@ -108,6 +108,7 @@ _CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 MAX_REFERENCE_DIMENSION = 1280
 MAX_REFERENCES_PER_IDENTITY = 8
 VIEW_DUPLICATE_THRESHOLD = 5.0
+REFERENCE_FEATURE_INSET = 0.125
 
 
 def _prepare_gray(image: np.ndarray) -> np.ndarray:
@@ -115,6 +116,16 @@ def _prepare_gray(image: np.ndarray) -> np.ndarray:
     share one contrast domain (helps matte/low-texture surfaces)."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     return _CLAHE.apply(gray)
+
+
+def _reference_feature_mask(gray: np.ndarray) -> np.ndarray:
+    """Keep enrollment evidence near the centered target, not scene edges."""
+    height, width = gray.shape[:2]
+    x_inset = round(width * REFERENCE_FEATURE_INSET)
+    y_inset = round(height * REFERENCE_FEATURE_INSET)
+    mask = np.zeros((height, width), dtype=np.uint8)
+    mask[y_inset : height - y_inset, x_inset : width - x_inset] = 255
+    return mask
 
 
 def _scaled_variants(gray: np.ndarray, *, extra_scale: bool) -> list[np.ndarray]:
@@ -258,7 +269,9 @@ class InstanceRecognizer:
             if self.reference_count(identity_key) >= MAX_REFERENCES_PER_IDENTITY:
                 break
             prepared = _CLAHE.apply(variant)
-            keypoints, descriptors = self._extractor.detectAndCompute(prepared, None)
+            keypoints, descriptors = self._extractor.detectAndCompute(
+                prepared, _reference_feature_mask(prepared)
+            )
             if descriptors is None or len(keypoints) < min_keypoints:
                 continue
             height, width = prepared.shape[:2]
