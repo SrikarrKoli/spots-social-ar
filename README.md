@@ -1,4 +1,4 @@
-# Spots
+# Spots: Social AR for Shared Places
 
 Spots lets people leave notes on physical objects and discover what someone else
 had to say about them. A concert poster could hold “Anyone going Friday?”; someone
