@@ -1,4 +1,4 @@
-# Spots: Social AR for Shared Places
+# Spots: Social AR for Meta Ray-Ban Display
 
 Spots lets people leave notes on physical objects and discover what someone else
 had to say about them. A concert poster could hold “Anyone going Friday?”; someone
